@@ -1,0 +1,16 @@
+{
+    "name": "BYTools.EnvTimeline.Runtime",
+    "rootNamespace": "BYTools.EnvTimeline",
+    "references": [
+        "Unity.Timeline"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

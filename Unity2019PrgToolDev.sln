@@ -1,0 +1,32 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 11.00
+# Visual Studio 2010
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BYTools.EnvTimeline.Runtime", "BYTools.EnvTimeline.Runtime.csproj", "{029f3b3a-4404-b999-b3c4-9c3b34743408}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CSV2UnityMesh.Editor", "CSV2UnityMesh.Editor.csproj", "{33cd875f-7195-d718-bddc-dcf753ec913e}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BYTools.EnvTimeline.Editor", "BYTools.EnvTimeline.Editor.csproj", "{6f87f346-a9b0-4716-d13e-b15213f442bd}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{029f3b3a-4404-b999-b3c4-9c3b34743408}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{029f3b3a-4404-b999-b3c4-9c3b34743408}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{029f3b3a-4404-b999-b3c4-9c3b34743408}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{029f3b3a-4404-b999-b3c4-9c3b34743408}.Release|Any CPU.Build.0 = Release|Any CPU
+		{33cd875f-7195-d718-bddc-dcf753ec913e}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{33cd875f-7195-d718-bddc-dcf753ec913e}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{33cd875f-7195-d718-bddc-dcf753ec913e}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{33cd875f-7195-d718-bddc-dcf753ec913e}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6f87f346-a9b0-4716-d13e-b15213f442bd}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6f87f346-a9b0-4716-d13e-b15213f442bd}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6f87f346-a9b0-4716-d13e-b15213f442bd}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6f87f346-a9b0-4716-d13e-b15213f442bd}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
