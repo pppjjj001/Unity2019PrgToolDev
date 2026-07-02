@@ -107,7 +107,6 @@ namespace BYTools.EnvTimeline
             if (!foldReflProbe) return;
 
             EditorGUILayout.PropertyField(serializedObject.FindProperty("controlReflectionProbes"));
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("blendProbeIntensity"));
             serializedObject.ApplyModifiedProperties();
         }
 

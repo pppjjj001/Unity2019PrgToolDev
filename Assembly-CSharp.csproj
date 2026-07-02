@@ -661,13 +661,13 @@
  </Reference>
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="CSV2UnityMesh.Editor.csproj">
-      <Project>{33cd875f-7195-d718-bddc-dcf753ec913e}</Project>
-      <Name>CSV2UnityMesh.Editor</Name>
-    </ProjectReference>
     <ProjectReference Include="BYTools.EnvTimeline.Editor.csproj">
       <Project>{6f87f346-a9b0-4716-d13e-b15213f442bd}</Project>
       <Name>BYTools.EnvTimeline.Editor</Name>
+    </ProjectReference>
+    <ProjectReference Include="CSV2UnityMesh.Editor.csproj">
+      <Project>{33cd875f-7195-d718-bddc-dcf753ec913e}</Project>
+      <Name>CSV2UnityMesh.Editor</Name>
     </ProjectReference>
     <ProjectReference Include="BYTools.EnvTimeline.Runtime.csproj">
       <Project>{029f3b3a-4404-b999-b3c4-9c3b34743408}</Project>

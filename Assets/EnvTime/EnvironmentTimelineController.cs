@@ -23,7 +23,6 @@ namespace BYTools.EnvTimeline
 
         [Header("ReflectionProbe 控制")]
         public bool controlReflectionProbes = true;
-        public bool blendProbeIntensity = true;
 
         // 🆕 Light Probe 控制
         [Header("Light Probe 控制")]
@@ -647,9 +646,14 @@ namespace BYTools.EnvTimeline
 
         void UpdateProbeActivation(EnvTimeNode from, EnvTimeNode to, float t)
         {
+            // shader 不支持反射球融合，不需要同时打开两边的探针。
+            // 过渡中 t < 0.5 时保持 from 的探针，越过 50% 后切换为 to 的探针。
+            EnvTimeNode activeNode = (from == to || t < 0.5f) ? from : to;
+
             _nextActiveProbes.Clear();
-            CollectProbesFromNode(from, _nextActiveProbes);
-            CollectProbesFromNode(to, _nextActiveProbes);
+            // shader 不支持反射球融合，同一时间只激活一个 mainProbe
+            if (activeNode != null && activeNode.mainProbe)
+                _nextActiveProbes.Add(activeNode.mainProbe);
 
             foreach (var p in _currentActiveProbes)
             {
@@ -662,17 +666,6 @@ namespace BYTools.EnvTimeline
             {
                 if (p == null) continue;
                 SetProbeEnabled(p, true);
-            }
-
-            if (blendProbeIntensity && from != to)
-            {
-                if (from.mainProbe) from.mainProbe.intensity = Mathf.Lerp(1f, 0f, t);
-                if (to.mainProbe)   to.mainProbe.intensity   = Mathf.Lerp(0f, 1f, t);
-            }
-            else
-            {
-                if (from.mainProbe) from.mainProbe.intensity = 1f;
-                if (to.mainProbe)   to.mainProbe.intensity   = 1f;
             }
 
             _currentActiveProbes.Clear();

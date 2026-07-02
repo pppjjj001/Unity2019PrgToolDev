@@ -1281,7 +1281,8 @@ namespace BYTools.EnvTimelineSimple
 
         // ============================================================
         // 确保 Custom 模式 Probe 拥有 Cubemap（缺失则自动创建占位图片）
-        // 仅处理 Custom 模式；Baked/Realtime 模式由 BakeReflectionProbe 烘焙
+        // 注意：新烘焙流程中 Custom 模式已支持直接烘焙（见 BakeReflectionProbe），
+        //       此方法保留用于需要创建占位 Cubemap 图片的场景。
         // ============================================================
         bool EnsureProbeCubemap(EnvTimeNode node, string saveFolder, ref int counter)
         {
@@ -1412,10 +1413,10 @@ namespace BYTools.EnvTimelineSimple
         }
 
         // ============================================================
-        // 单 Probe 烘焙 / 创建 Cubemap
-        //   • Custom  模式：不支持烘焙，仅创建占位 Cubemap 图片
-        //   • Baked   模式：烘焙环境贴图到用户指定目录（EXR）
-        //   • Realtime 模式：同 Baked，烘焙到用户指定目录
+        // 单 Probe 烘焙（最终都保存为 Custom 模式）
+        //   • Custom  模式：临时切换到 Baked 模式烘焙，再切回 Custom，赋值 customBakedTexture
+        //   • Baked   模式：按现有流程烘焙，最后切换到 Custom 并赋值 customBakedTexture
+        //   • Realtime 模式：同 Baked
         // ============================================================
         void BakeReflectionProbe(EnvTimeNode node)
         {
@@ -1425,76 +1426,75 @@ namespace BYTools.EnvTimelineSimple
                 return;
             }
 
-            var mode = node.mainProbe.mode;
+            var probe = node.mainProbe;
+            var originalMode = probe.mode;
 
-            // ---- Custom 模式：不支持烘焙 ----
-            if (mode == ReflectionProbeMode.Custom)
+            // ---- 记录 Custom 模式现有纹理路径（用于同目录同名称替换）----
+            string existingCustomPath = null;
+            if (originalMode == ReflectionProbeMode.Custom && probe.customBakedTexture != null)
             {
-                if (node.mainProbe.customBakedTexture != null)
-                {
-                    EditorUtility.DisplayDialog("Custom 模式",
-                        $"Probe '{node.mainProbe.name}' 处于 Custom 模式，不支持烘焙。\n\n" +
-                        $"当前已指定 Cubemap: {node.mainProbe.customBakedTexture.name}\n" +
-                        $"如需烘焙，请将 Mode 切换为 Baked 后再操作。",
-                        "确定");
-                    return;
-                }
-
-                // 没有指定 Cubemap → 让用户选择目录创建占位图片
-                if (!TryPickAssetsFolder(
-                        $"为 '{node.mainProbe.name}' (Custom) 选择 Cubemap 图片保存目录",
-                        out string assetFolder))
-                {
-                    Debug.Log("[EnvTimeline] 已取消创建 Cubemap");
-                    return;
-                }
-
-                int counter = 1;
-                if (!EnsureProbeCubemap(node, assetFolder, ref counter))
-                {
-                    EditorUtility.DisplayDialog("错误", "创建 Cubemap 失败", "确定");
-                    return;
-                }
-
-                EditorUtility.DisplayDialog("✓ Cubemap 已创建",
-                    $"已为 Probe '{node.mainProbe.name}' 创建一张默认的 Cubemap 图片，\n" +
-                    $"并将其指定为 Custom Baked Texture。\n\n" +
-                    $"提示：Custom 模式不支持烘焙，此为占位图片。\n请手动替换为实际环境贴图。",
-                    "确定");
-                return;
+                existingCustomPath = AssetDatabase.GetAssetPath(probe.customBakedTexture);
             }
 
-            // ---- Baked / Realtime 模式：烘焙到用户指定目录 ----
-            if (!TryPickAssetsFolder(
-                    $"为 '{node.mainProbe.name}' ({mode}) 选择烘焙保存目录",
-                    out string bakeFolder))
+            // ---- 确定烘焙文件路径 ----
+            string filename;
+            if (!string.IsNullOrEmpty(existingCustomPath))
             {
-                Debug.Log("[EnvTimeline] 已取消烘焙");
-                return;
-            }
-
-            // 按照Baked_序号自增命名
-            int bakedFileIndex = GetNextBakedFileIndex(bakeFolder);
-            string filename = $"{bakeFolder}/Baked_{bakedFileIndex:D3}.exr";
-
-            if (Lightmapping.BakeReflectionProbe(node.mainProbe, filename))
-            {
-                AssetDatabase.Refresh();
-
-                // 加载烘焙结果并赋值给 bakedTexture
-                var bakedTex = AssetDatabase.LoadAssetAtPath<Cubemap>(filename);
-                if (bakedTex != null)
-                {
-                    node.mainProbe.bakedTexture = bakedTex;
-                    EditorUtility.SetDirty(node.mainProbe);
-                }
-
-                Debug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename}");
-                EditorUtility.DisplayDialog("✓ Probe 烘焙完成",
-                    $"已烘焙 '{node.mainProbe.name}'\n保存到: {filename}", "确定");
+                // Custom 模式有现有纹理：使用相同目录和基础名称生成 .exr 替换
+                string dir = Path.GetDirectoryName(existingCustomPath)?.Replace('\\', '/');
+                string baseName = Path.GetFileNameWithoutExtension(existingCustomPath);
+                filename = $"{dir}/{baseName}.exr";
             }
             else
             {
+                // 需要用户选择目录
+                if (!TryPickAssetsFolder(
+                        $"为 '{probe.name}' ({originalMode}) 选择烘焙保存目录",
+                        out string bakeFolder))
+                {
+                    Debug.Log("[EnvTimeline] 已取消烘焙");
+                    return;
+                }
+                int bakedFileIndex = GetNextBakedFileIndex(bakeFolder);
+                filename = $"{bakeFolder}/Baked_{bakedFileIndex:D3}.exr";
+            }
+
+            // ---- Custom 模式：临时切换到 Baked 模式进行烘焙 ----
+            bool wasCustom = (originalMode == ReflectionProbeMode.Custom);
+            Undo.RecordObject(probe, "Bake ReflectionProbe");
+            if (wasCustom)
+            {
+                probe.mode = ReflectionProbeMode.Baked;
+            }
+
+            bool bakeSuccess = Lightmapping.BakeReflectionProbe(probe, filename);
+
+            // Custom 模式：切回 Custom
+            if (wasCustom)
+            {
+                probe.mode = ReflectionProbeMode.Custom;
+            }
+
+            if (bakeSuccess)
+            {
+                AssetDatabase.Refresh();
+                var bakedTex = AssetDatabase.LoadAssetAtPath<Cubemap>(filename);
+                if (bakedTex != null)
+                {
+                    // 最终都保存为 Custom 模式
+                    probe.mode = ReflectionProbeMode.Custom;
+                    probe.customBakedTexture = bakedTex;
+                    EditorUtility.SetDirty(probe);
+                }
+
+                Debug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
+                EditorUtility.DisplayDialog("✓ Probe 烘焙完成",
+                    $"已烘焙 '{probe.name}'\n保存到: {filename}\n已切换为 Custom 模式", "确定");
+            }
+            else
+            {
+                // 烘焙失败：恢复原始模式
+                probe.mode = originalMode;
                 Debug.LogError("[EnvTimeline] Probe 烘焙失败");
                 EditorUtility.DisplayDialog("错误", "Probe 烘焙失败，请查看 Console", "确定");
             }
@@ -1502,8 +1502,9 @@ namespace BYTools.EnvTimelineSimple
 
         // ============================================================
         // 一键烘焙所有节点 SH
-        //   • Custom  模式 Probe：创建占位 Cubemap 图片到用户指定目录
-        //   • Baked   模式 Probe：烘焙环境贴图到用户指定目录（EXR）
+        //   • 所有模式 Probe 都会烘焙，最终统一保存为 Custom 模式
+        //   • Custom 模式：临时切换到 Baked 烘焙，再切回 Custom
+        //   • Baked/Realtime 模式：烘焙后切换到 Custom
         //   • 最后统一烘焙所有节点 SH
         // ============================================================
         void BakeAllNodes()
@@ -1512,99 +1513,109 @@ namespace BYTools.EnvTimelineSimple
 
             if (!ValidateNoDuplicateProbes()) return;
 
-            // 分类：Custom 模式需要创建 Cubemap，Baked/Realtime 模式需要烘焙
-            List<EnvTimeNode> needsCustomCubemap = new List<EnvTimeNode>();
+            // 收集所有需要烘焙的节点（所有模式都烘焙）
             List<EnvTimeNode> needsBake = new List<EnvTimeNode>();
-
             foreach (var node in data.nodes)
             {
-                if (node.mainProbe == null) continue;
-
-                if (node.mainProbe.mode == ReflectionProbeMode.Custom)
-                {
-                    if (node.mainProbe.customBakedTexture == null)
-                        needsCustomCubemap.Add(node);
-                }
-                else
-                {
-                    // Baked / Realtime → 需要烘焙
+                if (node.mainProbe != null)
                     needsBake.Add(node);
-                }
             }
 
-            // ---- 处理 Custom 模式：创建占位 Cubemap ----
-            if (needsCustomCubemap.Count > 0)
+            if (needsBake.Count == 0)
+            {
+                EditorUtility.DisplayDialog("提示", "没有可烘焙的节点（未指定主 Probe）", "确定");
+                return;
+            }
+
+            // 检查是否有需要用户选择目录的节点
+            //（Custom 模式且无现有纹理，或 Baked/Realtime 模式）
+            bool needFolderPick = false;
+            foreach (var node in needsBake)
+            {
+                var probe = node.mainProbe;
+                if (probe.mode == ReflectionProbeMode.Custom && probe.customBakedTexture != null)
+                    continue; // Custom 有现有纹理，使用同目录替换
+                needFolderPick = true;
+                break;
+            }
+
+            string defaultFolder = null;
+            if (needFolderPick)
             {
                 if (!TryPickAssetsFolder(
-                        $"选择 Cubemap 图片保存目录 (Custom 模式，需创建 {needsCustomCubemap.Count} 个)",
-                        out string customFolder))
+                        $"选择烘焙保存目录 (需烘焙 {needsBake.Count} 个 Probe，最终保存为 Custom 模式)",
+                        out defaultFolder))
                 {
                     Debug.Log("[EnvTimeline] 用户取消了操作");
                     return;
                 }
-
-                EditorUtility.DisplayProgressBar("创建 Cubemap", "正在创建 Custom 模式的 Cubemap...", 0f);
-                int cubemapCounter = 1;
-                for (int i = 0; i < needsCustomCubemap.Count; i++)
-                {
-                    var node = needsCustomCubemap[i];
-                    EditorUtility.DisplayProgressBar("创建 Cubemap",
-                        $"创建 {node.nodeName} 的 Cubemap ({i + 1}/{needsCustomCubemap.Count})",
-                        (float)i / needsCustomCubemap.Count);
-                    EnsureProbeCubemap(node, customFolder, ref cubemapCounter);
-                }
-                AssetDatabase.SaveAssets();
-                AssetDatabase.Refresh();
-                EditorUtility.ClearProgressBar();
-                Debug.Log($"[EnvTimeline] 已创建 {needsCustomCubemap.Count} 个 Custom Cubemap，保存在: {customFolder}");
             }
 
-            // ---- 处理 Baked / Realtime 模式：烘焙到指定目录 ----
-            if (needsBake.Count > 0)
+            // ---- 烘焙所有 Probe（最终统一保存为 Custom 模式）----
+            EditorUtility.DisplayProgressBar("烘焙 Probe", "正在烘焙 ReflectionProbe...", 0f);
+            int bakeOk = 0, bakeFail = 0;
+            for (int i = 0; i < needsBake.Count; i++)
             {
-                if (!TryPickAssetsFolder(
-                        $"选择烘焙保存目录 (需烘焙 {needsBake.Count} 个 Probe)",
-                        out string bakeFolder))
-                {
-                    Debug.Log("[EnvTimeline] 用户取消了操作");
-                    EditorUtility.ClearProgressBar();
-                    return;
-                }
-
-                EditorUtility.DisplayProgressBar("烘焙 Probe", "正在烘焙 ReflectionProbe...", 0f);
-                int bakeOk = 0, bakeFail = 0;
-                for (int i = 0; i < needsBake.Count; i++)
-                {
-                    var node = needsBake[i];
+                var node = needsBake[i];
                 EditorUtility.DisplayProgressBar("烘焙 Probe",
                     $"烘焙 {node.nodeName} 的 Probe ({i + 1}/{needsBake.Count})",
                     (float)i / needsBake.Count);
 
-                // 按照Baked_序号自增命名
-                int bakedFileIndex = GetNextBakedFileIndex(bakeFolder);
-                string filename = $"{bakeFolder}/Baked_{bakedFileIndex:D3}.exr";
-                    if (Lightmapping.BakeReflectionProbe(node.mainProbe, filename))
-                    {
-                        var bakedTex = AssetDatabase.LoadAssetAtPath<Cubemap>(filename);
-                        if (bakedTex != null)
-                        {
-                            node.mainProbe.bakedTexture = bakedTex;
-                            EditorUtility.SetDirty(node.mainProbe);
-                        }
-                        bakeOk++;
-                        Debug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename}");
-                    }
-                    else
-                    {
-                        bakeFail++;
-                        Debug.LogError($"[EnvTimeline] Probe 烘焙失败: {node.mainProbe.name}");
-                    }
+                var probe = node.mainProbe;
+                var originalMode = probe.mode;
+
+                // 记录 Custom 模式现有纹理路径（用于同目录同名称替换）
+                string existingCustomPath = null;
+                if (originalMode == ReflectionProbeMode.Custom && probe.customBakedTexture != null)
+                    existingCustomPath = AssetDatabase.GetAssetPath(probe.customBakedTexture);
+
+                // 确定烘焙文件路径
+                string filename;
+                if (!string.IsNullOrEmpty(existingCustomPath))
+                {
+                    // Custom 模式有现有纹理：使用相同目录和基础名称生成 .exr 替换
+                    string dir = Path.GetDirectoryName(existingCustomPath)?.Replace('\\', '/');
+                    string baseName = Path.GetFileNameWithoutExtension(existingCustomPath);
+                    filename = $"{dir}/{baseName}.exr";
                 }
-                AssetDatabase.SaveAssets();
-                AssetDatabase.Refresh();
-                EditorUtility.ClearProgressBar();
-                Debug.Log($"[EnvTimeline] 已烘焙 {bakeOk} 个 Probe (失败 {bakeFail})，保存在: {bakeFolder}");
+                else
+                {
+                    int bakedFileIndex = GetNextBakedFileIndex(defaultFolder);
+                    filename = $"{defaultFolder}/Baked_{bakedFileIndex:D3}.exr";
+                }
+
+                // Custom 模式：临时切换到 Baked 模式进行烘焙
+                bool wasCustom = (originalMode == ReflectionProbeMode.Custom);
+                if (wasCustom)
+                    probe.mode = ReflectionProbeMode.Baked;
+
+                if (Lightmapping.BakeReflectionProbe(probe, filename))
+                {
+                    // 最终都保存为 Custom 模式
+                    probe.mode = ReflectionProbeMode.Custom;
+
+                    AssetDatabase.Refresh();
+                    var bakedTex = AssetDatabase.LoadAssetAtPath<Cubemap>(filename);
+                    if (bakedTex != null)
+                    {
+                        probe.customBakedTexture = bakedTex;
+                        EditorUtility.SetDirty(probe);
+                    }
+                    bakeOk++;
+                    Debug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
+                }
+                else
+                {
+                    // 烘焙失败：恢复原始模式
+                    probe.mode = originalMode;
+                    bakeFail++;
+                    Debug.LogError($"[EnvTimeline] Probe 烘焙失败: {probe.name}");
+                }
             }
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+            EditorUtility.ClearProgressBar();
+            Debug.Log($"[EnvTimeline] 已烘焙 {bakeOk} 个 Probe (失败 {bakeFail})，所有 Probe 已切换为 Custom 模式");
 
             // ---- 烘焙所有节点 SH ----
             int ok = 0, fail = 0;
@@ -1628,10 +1639,8 @@ namespace BYTools.EnvTimelineSimple
             EditorUtility.ClearProgressBar();
 
             string summary = $"✓ SH 成功 {ok} 个，✗ SH 失败 {fail} 个";
-            if (needsCustomCubemap.Count > 0)
-                summary += $"\n已创建 {needsCustomCubemap.Count} 个 Custom Cubemap";
-            if (needsBake.Count > 0)
-                summary += $"\n已烘焙 {needsBake.Count} 个 Probe";
+            summary += $"\n已烘焙 {bakeOk} 个 Probe (失败 {bakeFail})";
+            summary += $"\n所有 Probe 已切换为 Custom 模式";
 
             EditorUtility.DisplayDialog("批量烘焙完成", summary, "确定");
         }

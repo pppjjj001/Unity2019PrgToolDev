@@ -315,7 +315,15 @@ namespace BYTools.EnvTimeline
         public Cubemap GetMainCubemap()
         {
             if (mainProbe == null) return null;
-            Texture t = mainProbe.texture != null ? mainProbe.texture : mainProbe.bakedTexture;
+
+            Texture t = mainProbe.texture;
+            if (t == null)
+            {
+                // Custom 模式使用 customBakedTexture，Baked/Realtime 模式使用 bakedTexture
+                t = (mainProbe.mode == ReflectionProbeMode.Custom)
+                    ? mainProbe.customBakedTexture
+                    : mainProbe.bakedTexture;
+            }
             return t as Cubemap;
         }
     }
