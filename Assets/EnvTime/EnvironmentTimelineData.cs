@@ -1,4 +1,4 @@
-﻿// EnvironmentTimelineData.cs（扩展版 - 增加 Light Probe 数据）
+// EnvironmentTimelineData.cs（扩展版 - 增加 Light Probe 数据）
 using System;
 using System.Collections.Generic;
 using UnityEngine;
@@ -118,11 +118,24 @@ namespace BYTools.EnvTimeline
     /// <summary>
     /// 🆕 单个 Light Probe 的 SH 数据（27 个 float = 3 通道 × 9 系数）
     /// 使用 float[] 而非 SphericalHarmonicsL2，方便序列化与无 GC 混合
+    ///
+    /// ⭐ Prefab 变换支持：
+    /// - localPositions 存储 Probe 在 Prefab 局部空间下的位置（烘焙时换算）
+    /// - bakeSpaceTransform 记录烘焙时 Prefab 根的世界变换
+    /// - 运行时通过当前 Prefab 变换把 Renderer 世界位置逆变换到局部空间做近邻查找
+    /// - 混合得到 SH 后，用 bakeSpace→currentSpace 的旋转差量旋转 SH 系数
+    ///
+    /// 向后兼容：旧数据只有 world-space positions，无 bakeSpaceTransform，
+    /// 此时 usePrefabSpace=false，行为与旧版完全一致。
     /// </summary>
     [Serializable]
     public class LightProbeSnapshot
     {
-        // 位置（世界空间）
+        // ===== 位置数据 =====
+        // 局部空间位置（相对 Prefab 根）。当 usePrefabSpace=true 时使用此数组做近邻查找。
+        public Vector3[] localPositions;
+
+        // 旧字段保留（世界空间）。仅当 usePrefabSpace=false 或旧数据迁移时使用。
         public Vector3[] positions;
 
         // 扁平化的 SH 系数：长度 = positions.Length * 27
@@ -130,24 +143,79 @@ namespace BYTools.EnvTimeline
         // 即 idx = probeIndex * 27 + c * 9 + b
         public float[] shCoefficients;
 
-        public bool IsValid => positions != null && positions.Length > 0
-            && shCoefficients != null && shCoefficients.Length == positions.Length * 27;
+        // ===== 烘焙空间信息 =====
+        [Tooltip("是否使用 Prefab 局部空间存储（支持 Prefab 旋转/缩放/位移）")]
+        public bool usePrefabSpace = false;
 
-        public int ProbeCount => positions != null ? positions.Length : 0;
+        // 烘焙时 Prefab 根的世界空间变换
+        public SpaceTransform bakeSpaceTransform;
+
+        /// <summary>
+        /// 返回用于近邻查找的位置数组。
+        /// usePrefabSpace=true 时返回局部位置，否则返回世界位置。
+        /// </summary>
+        public Vector3[] SamplePositions
+        {
+            get
+            {
+                if (usePrefabSpace && localPositions != null)
+                    return localPositions;
+                return positions;
+            }
+        }
+
+        public bool IsValid =>
+            (localPositions != null && localPositions.Length > 0 ||
+             positions != null && positions.Length > 0) &&
+            shCoefficients != null &&
+            shCoefficients.Length == ProbeCount * 27;
+
+        public int ProbeCount =>
+            usePrefabSpace && localPositions != null
+                ? localPositions.Length
+                : (positions != null ? positions.Length : 0);
 
         /// <summary>
         /// 从 LightmapSettings.lightProbes 当前烘焙数据捕获快照
         /// </summary>
-        public static LightProbeSnapshot CaptureCurrent()
+        /// <param name="prefabRoot">
+        /// Prefab 根节点的 Transform。传入非 null 时启用局部空间存储，
+        /// Probe 位置会转换到该 Transform 的局部空间，并记录其世界变换。
+        /// 传 null 时退化为旧版世界空间存储（向后兼容）。
+        /// </param>
+        public static LightProbeSnapshot CaptureCurrent(Transform prefabRoot = null)
         {
             var lp = LightmapSettings.lightProbes;
             if (lp == null || lp.count == 0) return null;
 
             var snap = new LightProbeSnapshot();
-            snap.positions = (Vector3[])lp.positions.Clone();
+            var worldPositions = lp.positions;
 
+            int n = worldPositions.Length;
+
+            if (prefabRoot != null)
+            {
+                // ===== Prefab 局部空间存储 =====
+                snap.usePrefabSpace = true;
+                snap.localPositions = new Vector3[n];
+                for (int i = 0; i < n; i++)
+                    snap.localPositions[i] = prefabRoot.InverseTransformPoint(worldPositions[i]);
+
+                // 同时保留世界位置（用于调试 / 旧路径兼容）
+                snap.positions = (Vector3[])worldPositions.Clone();
+
+                // 记录烘焙时的空间变换
+                snap.bakeSpaceTransform = SpaceTransform.FromTransform(prefabRoot);
+            }
+            else
+            {
+                // ===== 旧版世界空间存储（向后兼容）=====
+                snap.usePrefabSpace = false;
+                snap.positions = (Vector3[])worldPositions.Clone();
+            }
+
+            // SH 系数存储（两种模式共用）
             var baked = lp.bakedProbes;
-            int n = baked.Length;
             snap.shCoefficients = new float[n * 27];
 
             for (int i = 0; i < n; i++)
@@ -164,6 +232,55 @@ namespace BYTools.EnvTimeline
                 }
             }
             return snap;
+        }
+
+        /// <summary>
+        /// 将局部空间 Probe 位置变换到当前世界空间（用于 SceneView 可视化）。
+        /// 仅在 usePrefabSpace=true 时有效。
+        /// </summary>
+        public Vector3[] GetWorldPositions(Transform currentRoot)
+        {
+            if (!usePrefabSpace || localPositions == null)
+                return positions;
+
+            var result = new Vector3[localPositions.Length];
+            for (int i = 0; i < localPositions.Length; i++)
+                result[i] = currentRoot.TransformPoint(localPositions[i]);
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// 序列化的空间变换信息（位置+旋转+缩放），用于记录烘焙时 Prefab 根的世界状态。
+    /// </summary>
+    [Serializable]
+    public struct SpaceTransform
+    {
+        public Vector3 position;
+        public Quaternion rotation;
+        public Vector3 lossyScale;
+
+        public static SpaceTransform FromTransform(Transform t)
+        {
+            return new SpaceTransform
+            {
+                position = t.position,
+                rotation = t.rotation,
+                lossyScale = t.lossyScale,
+            };
+        }
+
+        public Matrix4x4 ToMatrix()
+        {
+            return Matrix4x4.TRS(position, rotation, lossyScale);
+        }
+
+        /// <summary>
+        /// 将世界空间点变换到此空间的局部坐标
+        /// </summary>
+        public Vector3 InverseTransformPoint(Vector3 worldPoint)
+        {
+            return ToMatrix().inverse.MultiplyPoint3x4(worldPoint);
         }
     }
 

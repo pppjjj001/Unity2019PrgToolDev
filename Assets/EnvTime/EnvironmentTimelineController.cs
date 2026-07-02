@@ -1,4 +1,4 @@
-﻿// EnvironmentTimelineController.cs（扩展版 - 增加 Light Probe 混合）
+// EnvironmentTimelineController.cs（扩展版 - 增加 Light Probe 混合）
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -34,8 +34,15 @@ namespace BYTools.EnvTimeline
         [Tooltip("自定义 Light Probe 采样邻居数。4=四近邻加权")]
         [Range(1, 4)]
         public int customLightProbeNeighborCount = 4;
+        [Tooltip("缓存每个 Renderer 的邻近 Probe index/weight。静态物体建议开启，可把采样成本从 Renderer×Probe 降到 Renderer×4")]
+        public bool cacheCustomProbeWeights = true;
         [Tooltip("更新频率限制（秒）。0=每帧。建议 0.05~0.1 节省性能")]
         public float lightProbeUpdateInterval = 0f;
+
+        [Header("Prefab 变换支持")]
+        [Tooltip("Prefab 根节点。指定后，LightProbe 快照中的局部位置会跟随 Prefab 的旋转/缩放/位移自动变换，SH 系数也会相应旋转。")]
+        [SerializeField]
+        public Transform prefabRoot;
 
         private EnvironmentTimelineData _timelineData;
         public EnvironmentTimelineData timelineData
@@ -65,7 +72,17 @@ namespace BYTools.EnvTimeline
         readonly HashSet<Renderer> _customProbeRenderers = new HashSet<Renderer>();
         readonly Dictionary<Renderer, LightProbeUsage> _originalLightProbeUsages
             = new Dictionary<Renderer, LightProbeUsage>();
+        readonly Dictionary<LightProbeSnapshot, Dictionary<Renderer, CustomProbeWeights>> _customProbeWeightCache
+            = new Dictionary<LightProbeSnapshot, Dictionary<Renderer, CustomProbeWeights>>();
         readonly SphericalHarmonicsL2[] _singleProbeBuffer = new SphericalHarmonicsL2[1];
+
+        class CustomProbeWeights
+        {
+            public Vector3 samplePosition;
+            public int neighborCount;
+            public int i0 = -1, i1 = -1, i2 = -1, i3 = -1;
+            public float w0, w1, w2, w3;
+        }
 
         void Update()
         {
@@ -282,11 +299,14 @@ namespace BYTools.EnvTimeline
             {
                 if (!r) continue;
 
-                Vector3 samplePosition = r.bounds.center;
-                SphericalHarmonicsL2 fromSH;
-                SphericalHarmonicsL2 toSH;
-                bool hasFrom = fromValid && SampleSnapshotNearest(fromData, samplePosition, out fromSH);
-                bool hasTo = toValid && SampleSnapshotNearest(toData, samplePosition, out toSH);
+                // ⭐ Prefab 空间支持：将 Renderer 世界位置逆变换到快照的采样空间
+                Vector3 worldPosition = r.bounds.center;
+                Vector3 samplePosition = TransformSamplePosition(worldPosition);
+
+                SphericalHarmonicsL2 fromSH = new SphericalHarmonicsL2();
+                SphericalHarmonicsL2 toSH = new SphericalHarmonicsL2();
+                bool hasFrom = fromValid && SampleSnapshot(fromData, r, samplePosition, out fromSH);
+                bool hasTo = toValid && SampleSnapshot(toData, r, samplePosition, out toSH);
                 if (!hasFrom && !hasTo) continue;
 
                 SphericalHarmonicsL2 result;
@@ -294,6 +314,9 @@ namespace BYTools.EnvTimeline
                     result = LerpSH(fromSH, toSH, t);
                 else
                     result = hasFrom ? fromSH : toSH;
+
+                // ⭐ Prefab 空间支持：旋转 SH 系数以匹配当前 Prefab 朝向
+                result = RotateSampledSH(result);
 
                 MaterialPropertyBlock mpb;
                 if (!_mpbCache.TryGetValue(r, out mpb))
@@ -315,6 +338,171 @@ namespace BYTools.EnvTimeline
             }
         }
 
+        /// <summary>
+        /// ⭐ 将世界空间位置变换到快照的采样空间。
+        /// - usePrefabSpace=true：逆变换到 Prefab 局部空间，与 localPositions 对齐
+        /// - usePrefabSpace=false：直接使用世界空间，与旧版 positions 对齐
+        /// </summary>
+        Vector3 TransformSamplePosition(Vector3 worldPosition)
+        {
+            // 检查是否有任何快照使用了 Prefab 空间
+            bool anyPrefabSpace = false;
+            if (timelineData != null)
+            {
+                foreach (var node in timelineData.nodes)
+                {
+                    if (node.lightProbeData != null && node.lightProbeData.usePrefabSpace)
+                    {
+                        anyPrefabSpace = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!anyPrefabSpace || prefabRoot == null)
+                return worldPosition;
+
+            return prefabRoot.InverseTransformPoint(worldPosition);
+        }
+
+        /// <summary>
+        /// ⭐ 旋转采样得到的 SH，使其匹配当前 Prefab 朝向。
+        /// 当快照使用 Prefab 空间存储时，SH 系数是在烘焙时 Prefab 的局部朝向下记录的。
+        /// 运行时 Prefab 旋转后，需要用 delta = currentRotation * inverse(bakeRotation) 旋转 SH。
+        /// </summary>
+        SphericalHarmonicsL2 RotateSampledSH(SphericalHarmonicsL2 sh)
+        {
+            if (prefabRoot == null)
+                return sh;
+
+            // 找到第一个使用 Prefab 空间的快照，获取其烘焙旋转
+            Quaternion bakeRotation = Quaternion.identity;
+            bool foundBakeRotation = false;
+
+            if (timelineData != null)
+            {
+                foreach (var node in timelineData.nodes)
+                {
+                    if (node.lightProbeData != null && node.lightProbeData.usePrefabSpace)
+                    {
+                        bakeRotation = node.lightProbeData.bakeSpaceTransform.rotation;
+                        foundBakeRotation = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!foundBakeRotation)
+                return sh;
+
+            Matrix4x4 deltaRotation = SHRotation.BuildDeltaRotation(bakeRotation, prefabRoot.rotation);
+            return SHRotation.RotateSH(sh, deltaRotation);
+        }
+
+        bool SampleSnapshot(LightProbeSnapshot snap, Renderer renderer, Vector3 position, out SphericalHarmonicsL2 result)
+        {
+            if (!cacheCustomProbeWeights)
+                return SampleSnapshotNearest(snap, position, out result);
+
+            result = default;
+            CustomProbeWeights weights = GetCachedProbeWeights(snap, renderer, position);
+            if (weights == null || weights.i0 < 0) return false;
+
+            AccumulateSnapshotSH(snap, weights.i0, weights.w0, ref result);
+            if (weights.i1 >= 0 && weights.w1 > 0f) AccumulateSnapshotSH(snap, weights.i1, weights.w1, ref result);
+            if (weights.i2 >= 0 && weights.w2 > 0f) AccumulateSnapshotSH(snap, weights.i2, weights.w2, ref result);
+            if (weights.i3 >= 0 && weights.w3 > 0f) AccumulateSnapshotSH(snap, weights.i3, weights.w3, ref result);
+            return true;
+        }
+
+        CustomProbeWeights GetCachedProbeWeights(LightProbeSnapshot snap, Renderer renderer, Vector3 position)
+        {
+            if (snap == null || !snap.IsValid || renderer == null) return null;
+
+            Dictionary<Renderer, CustomProbeWeights> rendererCache;
+            if (!_customProbeWeightCache.TryGetValue(snap, out rendererCache))
+            {
+                rendererCache = new Dictionary<Renderer, CustomProbeWeights>();
+                _customProbeWeightCache.Add(snap, rendererCache);
+            }
+
+            int neighborCount = Mathf.Clamp(customLightProbeNeighborCount, 1, 4);
+            CustomProbeWeights weights;
+            if (!rendererCache.TryGetValue(renderer, out weights))
+            {
+                weights = new CustomProbeWeights();
+                rendererCache.Add(renderer, weights);
+                BuildProbeWeights(snap, position, neighborCount, weights);
+                return weights;
+            }
+
+            if (weights.neighborCount != neighborCount ||
+                (weights.samplePosition - position).sqrMagnitude > 0.0001f)
+            {
+                BuildProbeWeights(snap, position, neighborCount, weights);
+            }
+
+            return weights;
+        }
+
+        void BuildProbeWeights(LightProbeSnapshot snap, Vector3 position, int neighborCount, CustomProbeWeights weights)
+        {
+            weights.samplePosition = position;
+            weights.neighborCount = neighborCount;
+            weights.i0 = weights.i1 = weights.i2 = weights.i3 = -1;
+            weights.w0 = weights.w1 = weights.w2 = weights.w3 = 0f;
+
+            int count = snap.ProbeCount;
+            float d0 = float.MaxValue, d1 = float.MaxValue, d2 = float.MaxValue, d3 = float.MaxValue;
+            var positions = snap.SamplePositions;
+
+            for (int i = 0; i < count; i++)
+            {
+                float d = (positions[i] - position).sqrMagnitude;
+                if (d <= 0.000001f)
+                {
+                    weights.i0 = i;
+                    weights.w0 = 1f;
+                    return;
+                }
+
+                if (d < d0)
+                {
+                    d3 = d2; weights.i3 = weights.i2;
+                    d2 = d1; weights.i2 = weights.i1;
+                    d1 = d0; weights.i1 = weights.i0;
+                    d0 = d; weights.i0 = i;
+                }
+                else if (neighborCount > 1 && d < d1)
+                {
+                    d3 = d2; weights.i3 = weights.i2;
+                    d2 = d1; weights.i2 = weights.i1;
+                    d1 = d; weights.i1 = i;
+                }
+                else if (neighborCount > 2 && d < d2)
+                {
+                    d3 = d2; weights.i3 = weights.i2;
+                    d2 = d; weights.i2 = i;
+                }
+                else if (neighborCount > 3 && d < d3)
+                {
+                    d3 = d; weights.i3 = i;
+                }
+            }
+
+            float w0 = weights.i0 >= 0 ? 1f / Mathf.Max(d0, 0.000001f) : 0f;
+            float w1 = weights.i1 >= 0 && neighborCount > 1 ? 1f / Mathf.Max(d1, 0.000001f) : 0f;
+            float w2 = weights.i2 >= 0 && neighborCount > 2 ? 1f / Mathf.Max(d2, 0.000001f) : 0f;
+            float w3 = weights.i3 >= 0 && neighborCount > 3 ? 1f / Mathf.Max(d3, 0.000001f) : 0f;
+            float weightSum = w0 + w1 + w2 + w3;
+            if (weightSum <= 0f) return;
+
+            weights.w0 = w0 / weightSum;
+            weights.w1 = w1 / weightSum;
+            weights.w2 = w2 / weightSum;
+            weights.w3 = w3 / weightSum;
+        }
+
         bool SampleSnapshotNearest(LightProbeSnapshot snap, Vector3 position, out SphericalHarmonicsL2 result)
         {
             result = default;
@@ -325,7 +513,7 @@ namespace BYTools.EnvTimeline
 
             int i0 = -1, i1 = -1, i2 = -1, i3 = -1;
             float d0 = float.MaxValue, d1 = float.MaxValue, d2 = float.MaxValue, d3 = float.MaxValue;
-            var positions = snap.positions;
+            var positions = snap.SamplePositions;
 
             for (int i = 0; i < count; i++)
             {
@@ -548,6 +736,7 @@ namespace BYTools.EnvTimeline
             foreach (var kv in _originalLightProbeUsages)
                 if (kv.Key) kv.Key.lightProbeUsage = kv.Value;
             _originalLightProbeUsages.Clear();
+            _customProbeWeightCache.Clear();
         }
 
         void OnDisable()

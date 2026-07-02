@@ -50,6 +50,8 @@
     <ImplicitlyExpandDesignTimeFacades>false</ImplicitlyExpandDesignTimeFacades>
   </PropertyGroup>
   <ItemGroup>
+     <Compile Include="Assets\EnvTime\Editor\CustomProbeSamplingDebugger.cs" />
+     <Compile Include="Assets\EnvTime\Editor\CustomProbeSamplingSceneView.cs" />
      <Compile Include="Assets\EnvTime\Editor\EnvironmentTimelineControllerEditor.cs" />
      <Compile Include="Assets\EnvTime\Editor\EnvironmentTimelineEditorWindow.cs" />
      <Compile Include="Assets\EnvTime\Editor\EnvironmentTimelinePlayableAssetEditor.cs" />

@@ -50,9 +50,7 @@
     <ImplicitlyExpandDesignTimeFacades>false</ImplicitlyExpandDesignTimeFacades>
   </PropertyGroup>
   <ItemGroup>
-     <Compile Include="Assets\EnvTime\Editor\EnvironmentTimelineControllerEditor.cs" />
-     <Compile Include="Assets\EnvTime\Editor\EnvironmentTimelineEditorWindow.cs" />
-     <Compile Include="Assets\EnvTime\Editor\EnvironmentTimelinePlayableAssetEditor.cs" />
+     <Compile Include="Assets\ComfyUIBridge\Editor\ComfyUIBridgeEditorWindow.cs" />
  <Reference Include="UnityEditor.TestRunner">
  <HintPath>I:/2019Program/Unity2019PrgToolDev/Library/ScriptAssemblies/UnityEditor.TestRunner.dll</HintPath>
  </Reference>
@@ -709,13 +707,17 @@
  </Reference>
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="Assembly-CSharp.csproj">
-      <Project>{10ee2abb-a192-9687-b9f4-02c2d2cc9544}</Project>
-      <Name>Assembly-CSharp</Name>
-    </ProjectReference>
     <ProjectReference Include="CSV2UnityMesh.Editor.csproj">
       <Project>{33cd875f-7195-d718-bddc-dcf753ec913e}</Project>
       <Name>CSV2UnityMesh.Editor</Name>
+    </ProjectReference>
+    <ProjectReference Include="BYTools.EnvTimeline.Editor.csproj">
+      <Project>{6f87f346-a9b0-4716-d13e-b15213f442bd}</Project>
+      <Name>BYTools.EnvTimeline.Editor</Name>
+    </ProjectReference>
+    <ProjectReference Include="BYTools.EnvTimeline.Runtime.csproj">
+      <Project>{029f3b3a-4404-b999-b3c4-9c3b34743408}</Project>
+      <Name>BYTools.EnvTimeline.Runtime</Name>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

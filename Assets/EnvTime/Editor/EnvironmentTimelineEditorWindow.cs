@@ -1,4 +1,4 @@
-﻿// EnvironmentTimelineEditorWindow.cs（MonoBehaviour 适配版 - 全局可滚动 + 视觉强化版）
+// EnvironmentTimelineEditorWindow.cs（MonoBehaviour 适配版 - 全局可滚动 + 视觉强化版）
 #if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
@@ -341,6 +341,23 @@ namespace BYTools.EnvTimeline
         EnvironmentTimelineData data;
         Vector2 mainScroll;
         int selectedNodeIndex = -1;
+
+        // 🆕 自定义采样调试状态（窗口局部）
+        Renderer debugSampleRenderer;
+        bool debugShowInScene = true;
+        bool debugShowAllProbes = false;
+        bool debugAutoPickFromSelected = true;
+        int debugNeighborCount = 4;
+        CustomProbeSamplingResult debugResult;
+
+        // 权重条颜色（与 SceneView 一致）
+        static readonly Color[] kSlotColors =
+        {
+            new Color(1.0f, 0.4f, 0.2f),
+            new Color(1.0f, 0.8f, 0.2f),
+            new Color(0.4f, 0.9f, 0.4f),
+            new Color(0.4f, 0.6f, 1.0f),
+        };
 
         const float TIMELINE_HEIGHT = 70f;
         Rect timelineRect;
@@ -1030,6 +1047,12 @@ namespace BYTools.EnvTimeline
             }
 
             EditorGUILayout.EndVertical();
+
+            // ============================================================
+            // 🆕 自定义采样调试面板（使用当前节点的 LightProbeSnapshot）
+            // ============================================================
+            DrawSamplingDebugPanel(node);
+
             if (EditorGUI.EndChangeCheck())
             {
                 if (newProbe != null && IsProbeUsedByOtherNode(newProbe, selectedNodeIndex, out int usedBy))
@@ -1186,6 +1209,161 @@ namespace BYTools.EnvTimeline
             {
                 EditorUtility.SetDirty(data);
             }
+        }
+
+        // ============================================================
+        // 🆕 自定义采样调试面板（使用当前节点的 LightProbeSnapshot）
+        // ============================================================
+        void DrawSamplingDebugPanel(EnvTimeNode node)
+        {
+            var snap = node.lightProbeData;
+            if (snap == null || !snap.IsValid)
+            {
+                EditorGUILayout.Space(4);
+                DrawSectionHeader("🔬 自定义采样调试", CLR_WARN, "🔬");
+                EditorGUILayout.HelpBox("当前节点没有有效的 LightProbeSnapshot，无法进行采样调试。", MessageType.Info);
+                return;
+            }
+
+            EditorGUILayout.Space(6);
+            DrawSectionHeader($"🔬 自定义采样调试 (快照: {snap.ProbeCount} probes)", CLR_WARN, "🔬");
+
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+
+            // Renderer 选择
+            EditorGUI.BeginChangeCheck();
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("采样 Renderer", GUILayout.Width(90));
+            debugSampleRenderer = (Renderer)EditorGUILayout.ObjectField(
+                debugSampleRenderer, typeof(Renderer), true);
+            EditorGUILayout.EndHorizontal();
+
+            debugAutoPickFromSelected = EditorGUILayout.Toggle("自动从选中物体获取", debugAutoPickFromSelected);
+
+            if (debugAutoPickFromSelected && debugSampleRenderer == null)
+            {
+                var sel = Selection.activeGameObject;
+                if (sel != null)
+                    debugSampleRenderer = sel.GetComponent<Renderer>();
+            }
+
+            // 邻居数
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("邻居数", GUILayout.Width(90));
+            debugNeighborCount = EditorGUILayout.IntSlider(debugNeighborCount, 1, 4);
+            EditorGUILayout.EndHorizontal();
+
+            if (EditorGUI.EndChangeCheck())
+            {
+                CustomProbeSamplingSceneView.neighborCount = debugNeighborCount;
+                CustomProbeSamplingSceneView.InvalidateCache();
+                SceneView.RepaintAll();
+            }
+
+            // SceneView 可视化开关
+            EditorGUI.BeginChangeCheck();
+            debugShowInScene = EditorGUILayout.Toggle("SceneView 可视化", debugShowInScene);
+            debugShowAllProbes = EditorGUILayout.Toggle("显示全部 Probe 点云", debugShowAllProbes);
+            if (EditorGUI.EndChangeCheck())
+            {
+                CustomProbeSamplingSceneView.showInSceneView = debugShowInScene;
+                CustomProbeSamplingSceneView.showAllProbes = debugShowAllProbes;
+                SceneView.RepaintAll();
+            }
+
+            // 执行采样
+            if (debugSampleRenderer != null)
+            {
+                EditorGUILayout.Space(6);
+
+                Vector3 samplePos = debugSampleRenderer.bounds.center;
+                debugResult = CustomProbeSamplingDebugger.Sample(snap, samplePos, debugNeighborCount);
+
+                // 联动 SceneView
+                CustomProbeSamplingSceneView.debugRenderer = debugSampleRenderer;
+                CustomProbeSamplingSceneView.snapshot = snap;
+                CustomProbeSamplingSceneView.neighborCount = debugNeighborCount;
+
+                if (!debugResult.IsValid)
+                {
+                    EditorGUILayout.HelpBox("采样失败：快照无效或 Probe 数为 0", MessageType.Error);
+                }
+                else
+                {
+                    // 采样结果摘要
+                    EditorGUILayout.LabelField($"采样位置: {samplePos}");
+                    EditorGUILayout.LabelField($"有效邻居: {debugResult.ActiveCount} / {debugNeighborCount}");
+
+                    // SH 颜色预览
+                    Color shColor = CustomProbeSamplingDebugger.EvaluateSHColor(debugResult.blendedSH, Vector3.up);
+                    EditorGUILayout.BeginHorizontal();
+                    EditorGUILayout.LabelField("SH→↑方向色:", GUILayout.Width(90));
+                    Rect colorRect = GUILayoutUtility.GetRect(60, 18, GUILayout.Width(60));
+                    EditorGUI.DrawRect(colorRect, shColor.gamma);
+                    EditorGUILayout.LabelField($"({shColor.r:F2}, {shColor.g:F2}, {shColor.b:F2})");
+                    EditorGUILayout.EndHorizontal();
+
+                    EditorGUILayout.Space(4);
+
+                    // 权重条
+                    EditorGUILayout.LabelField("权重分布", EditorStyles.boldLabel);
+                    for (int slot = 0; slot < debugNeighborCount; slot++)
+                    {
+                        int idx = debugResult.GetIndex(slot);
+                        float w = debugResult.GetWeight(slot);
+                        float distSqr = debugResult.GetDistanceSqr(slot);
+                        float dist = idx >= 0 ? Mathf.Sqrt(Mathf.Max(distSqr, 0f)) : -1f;
+
+                        if (idx < 0)
+                        {
+                            EditorGUILayout.LabelField($"  Slot {slot}: (无)");
+                            continue;
+                        }
+
+                        EditorGUILayout.BeginHorizontal();
+                        EditorGUILayout.LabelField($"#{idx}", GUILayout.Width(40));
+                        Color barColor = kSlotColors[slot];
+
+                        Rect barBg = GUILayoutUtility.GetRect(0, 16, GUILayout.ExpandWidth(true));
+                        EditorGUI.DrawRect(barBg, new Color(0.2f, 0.2f, 0.2f));
+                        if (w > 0f)
+                        {
+                            Rect barFill = new Rect(barBg.x, barBg.y, barBg.width * w, barBg.height);
+                            EditorGUI.DrawRect(barFill, barColor);
+                        }
+
+                        EditorGUILayout.LabelField($"{w:P1}  d={dist:F2}m", GUILayout.Width(110));
+                        EditorGUILayout.EndHorizontal();
+                    }
+
+                    EditorGUILayout.Space(4);
+
+                    if (GUILayout.Button("应用到此 Renderer（写入 MPB）", GUILayout.Height(24)))
+                    {
+                        Undo.RecordObject(debugSampleRenderer, "Apply Debug SH");
+
+                        if (debugSampleRenderer.lightProbeUsage != LightProbeUsage.CustomProvided)
+                            debugSampleRenderer.lightProbeUsage = LightProbeUsage.CustomProvided;
+
+                        var mpb = new MaterialPropertyBlock();
+                        debugSampleRenderer.GetPropertyBlock(mpb);
+
+                        var buffer = new SphericalHarmonicsL2[1];
+                        buffer[0] = debugResult.blendedSH;
+                        mpb.CopySHCoefficientArraysFrom(buffer);
+                        debugSampleRenderer.SetPropertyBlock(mpb);
+
+                        SceneView.RepaintAll();
+                        Debug.Log($"[EnvTimeline] 已将采样 SH 写入 Renderer '{debugSampleRenderer.name}' 的 MPB");
+                    }
+                }
+            }
+            else
+            {
+                EditorGUILayout.HelpBox("请选择一个 Renderer 进行采样调试", MessageType.Info);
+            }
+
+            EditorGUILayout.EndVertical();
         }
 
         // ============================================================
