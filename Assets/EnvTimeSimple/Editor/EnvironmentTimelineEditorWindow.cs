@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -1312,6 +1313,42 @@ namespace BYTools.EnvTimelineSimple
         }
 
         // ============================================================
+        // 获取下一个Baked文件序号（按目录中现有Baked_*.exr文件自动递增）
+        // ============================================================
+        int GetNextBakedFileIndex(string folderPath)
+        {
+            if (!AssetDatabase.IsValidFolder(folderPath))
+                return 1;
+
+            // 获取目录下所有文件
+            string[] existingFiles = AssetDatabase.GetAllAssetPaths()
+                .Where(path => path.StartsWith(folderPath + "/") && 
+                             path.Contains("Baked_") && 
+                             path.EndsWith(".exr"))
+                .ToArray();
+
+            if (existingFiles.Length == 0)
+                return 1;
+
+            // 找出最大的序号
+            int maxIndex = 0;
+            foreach (string filePath in existingFiles)
+            {
+                string fileName = System.IO.Path.GetFileNameWithoutExtension(filePath);
+                if (fileName.StartsWith("Baked_"))
+                {
+                    string numberPart = fileName.Substring("Baked_".Length);
+                    if (int.TryParse(numberPart, out int index))
+                    {
+                        maxIndex = Mathf.Max(maxIndex, index);
+                    }
+                }
+            }
+
+            return maxIndex + 1;
+        }
+
+        // ============================================================
         // 单节点 SH 烘焙
         // ============================================================
         void BakeNodeSH(EnvTimeNode node)
@@ -1436,7 +1473,9 @@ namespace BYTools.EnvTimelineSimple
                 return;
             }
 
-            string filename = $"{bakeFolder}/{node.mainProbe.name}_Baked.exr";
+            // 按照Baked_序号自增命名
+            int bakedFileIndex = GetNextBakedFileIndex(bakeFolder);
+            string filename = $"{bakeFolder}/Baked_{bakedFileIndex:D3}.exr";
 
             if (Lightmapping.BakeReflectionProbe(node.mainProbe, filename))
             {
@@ -1537,11 +1576,13 @@ namespace BYTools.EnvTimelineSimple
                 for (int i = 0; i < needsBake.Count; i++)
                 {
                     var node = needsBake[i];
-                    EditorUtility.DisplayProgressBar("烘焙 Probe",
-                        $"烘焙 {node.nodeName} 的 Probe ({i + 1}/{needsBake.Count})",
-                        (float)i / needsBake.Count);
+                EditorUtility.DisplayProgressBar("烘焙 Probe",
+                    $"烘焙 {node.nodeName} 的 Probe ({i + 1}/{needsBake.Count})",
+                    (float)i / needsBake.Count);
 
-                    string filename = $"{bakeFolder}/{node.mainProbe.name}_Baked.exr";
+                // 按照Baked_序号自增命名
+                int bakedFileIndex = GetNextBakedFileIndex(bakeFolder);
+                string filename = $"{bakeFolder}/Baked_{bakedFileIndex:D3}.exr";
                     if (Lightmapping.BakeReflectionProbe(node.mainProbe, filename))
                     {
                         var bakedTex = AssetDatabase.LoadAssetAtPath<Cubemap>(filename);

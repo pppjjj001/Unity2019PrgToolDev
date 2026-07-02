@@ -50,12 +50,12 @@
     <ImplicitlyExpandDesignTimeFacades>false</ImplicitlyExpandDesignTimeFacades>
   </PropertyGroup>
   <ItemGroup>
-     <Compile Include="Assets\EnvTime\EnvironmentTimelineController.cs" />
-     <Compile Include="Assets\EnvTime\EnvironmentTimelineData.cs" />
-     <Compile Include="Assets\EnvTime\EnvironmentTimelinePlayableAsset.cs" />
-     <Compile Include="Assets\EnvTime\EnvironmentTimelinePlayableBehaviour.cs" />
-     <Compile Include="Assets\EnvTime\EnvironmentTimelineTrack.cs" />
-     <Compile Include="Assets\EnvTime\EnvironmentTimelineTrackMixer.cs" />
+     <Compile Include="Assets\EnvTimeSimple\EnvironmentTimelineController.cs" />
+     <Compile Include="Assets\EnvTimeSimple\EnvironmentTimelineData.cs" />
+     <Compile Include="Assets\EnvTimeSimple\EnvironmentTimelinePlayableAsset.cs" />
+     <Compile Include="Assets\EnvTimeSimple\EnvironmentTimelinePlayableBehaviour.cs" />
+     <Compile Include="Assets\EnvTimeSimple\EnvironmentTimelineTrack.cs" />
+     <Compile Include="Assets\EnvTimeSimple\EnvironmentTimelineTrackMixer.cs" />
  <Reference Include="Unity.RenderPipeline.Universal.ShaderLibrary">
  <HintPath>I:/2019Program/Unity2019PrgToolDev/Library/ScriptAssemblies/Unity.RenderPipeline.Universal.ShaderLibrary.dll</HintPath>
  </Reference>
@@ -664,6 +664,14 @@
     <ProjectReference Include="CSV2UnityMesh.Editor.csproj">
       <Project>{33cd875f-7195-d718-bddc-dcf753ec913e}</Project>
       <Name>CSV2UnityMesh.Editor</Name>
+    </ProjectReference>
+    <ProjectReference Include="BYTools.EnvTimeline.Editor.csproj">
+      <Project>{6f87f346-a9b0-4716-d13e-b15213f442bd}</Project>
+      <Name>BYTools.EnvTimeline.Editor</Name>
+    </ProjectReference>
+    <ProjectReference Include="BYTools.EnvTimeline.Runtime.csproj">
+      <Project>{029f3b3a-4404-b999-b3c4-9c3b34743408}</Project>
+      <Name>BYTools.EnvTimeline.Runtime</Name>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
