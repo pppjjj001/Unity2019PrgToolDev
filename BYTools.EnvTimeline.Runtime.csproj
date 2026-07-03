@@ -57,6 +57,7 @@
      <Compile Include="Assets\EnvTime\EnvironmentTimelineTrack.cs" />
      <Compile Include="Assets\EnvTime\EnvironmentTimelineTrackMixer.cs" />
      <Compile Include="Assets\EnvTime\SHRotation.cs" />
+     <Compile Include="Assets\EnvTime\TetrahedralInterpolator.cs" />
      <None Include="Assets\EnvTime\BYTools.EnvTimeline.Runtime.asmdef" />
  <Reference Include="Unity.Timeline">
  <HintPath>I:/2019Program/Unity2019PrgToolDev/Library/ScriptAssemblies/Unity.Timeline.dll</HintPath>

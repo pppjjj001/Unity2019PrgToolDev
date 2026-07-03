@@ -372,6 +372,13 @@ namespace BYTools.EnvTimeline
         [SerializeField] private int defaultCubemapSize = 128;
         [SerializeField] private string cubemapPrefix = "bake_";
 
+        // 🆕 动态探针布置
+        bool foldProbePlacement = false;
+        ProbePlacementSettings placementSettings = new ProbePlacementSettings();
+        LightProbeGroup placementTargetGroup;
+        Vector3[] placementPreviewPositions;
+        bool placementShowPreview = true;
+
         static readonly Color CLR_TITLE       = new Color(1f, 0.85f, 0.3f);
         static readonly Color CLR_OK          = new Color(0.4f, 1f, 0.5f);
         static readonly Color CLR_WARN        = new Color(1f, 0.6f, 0.2f);
@@ -425,6 +432,8 @@ namespace BYTools.EnvTimeline
             DrawNodeList();
             EditorGUILayout.Space(8);
             DrawSelectedNodeInspector();
+            EditorGUILayout.Space(10);
+            DrawProbePlacementPanel();
             EditorGUILayout.Space(10);
 
             EditorGUILayout.EndScrollView();
@@ -2031,6 +2040,193 @@ void BakeLightProbesOnlyWithConfirm()
 
         static string FormatV4(Vector4 v) =>
             $"({v.x:F3}, {v.y:F3}, {v.z:F3}, {v.w:F3})";
+
+        // ============================================================
+        // 🆕 动态探针布置面板
+        // ============================================================
+        void DrawProbePlacementPanel()
+        {
+            foldProbePlacement = DrawFoldHeaderBold(foldProbePlacement, "🧊 动态探针布置", CLR_PROBE);
+            if (!foldProbePlacement) return;
+
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+
+            EditorGUILayout.HelpBox(
+                "自动生成 LightProbe 位置并写入 LightProbeGroup。\n" +
+                "• GridBounds：在手动指定的 Bounds 内生成均匀网格\n" +
+                "• RendererBounds：从场景 Renderer 自动收集包围盒\n" +
+                "• NavMeshSurface：在导航网格上方布置（角色活动区域）",
+                MessageType.Info);
+
+            EditorGUILayout.Space(4);
+
+            // 模式选择
+            placementSettings.mode = (ProbePlacementMode)EditorGUILayout.EnumPopup(
+                "布置模式", placementSettings.mode);
+
+            EditorGUILayout.Space(4);
+
+            // 通用参数
+            EditorGUILayout.LabelField("网格参数", EditorStyles.boldLabel);
+            placementSettings.spacingX = EditorGUILayout.FloatField(
+                "  X 间距", placementSettings.spacingX);
+            placementSettings.spacingY = EditorGUILayout.FloatField(
+                "  Y 间距", placementSettings.spacingY);
+            placementSettings.spacingZ = EditorGUILayout.FloatField(
+                "  Z 间距", placementSettings.spacingZ);
+            placementSettings.yOffset = EditorGUILayout.FloatField(
+                "  Y 偏移(地面抬高)", placementSettings.yOffset);
+            placementSettings.extraLayers = EditorGUILayout.IntSlider(
+                "  额外层数", placementSettings.extraLayers, 0, 5);
+            placementSettings.layerHeight = EditorGUILayout.FloatField(
+                "  层间距", placementSettings.layerHeight);
+
+            EditorGUILayout.Space(4);
+
+            // 模式特定参数
+            switch (placementSettings.mode)
+            {
+                case ProbePlacementMode.GridBounds:
+                    EditorGUILayout.LabelField("Bounds 设置", EditorStyles.boldLabel);
+                    placementSettings.customBounds.center = EditorGUILayout.Vector3Field(
+                        "  中心", placementSettings.customBounds.center);
+                    placementSettings.customBounds.size = EditorGUILayout.Vector3Field(
+                        "  尺寸", placementSettings.customBounds.size);
+                    break;
+
+                case ProbePlacementMode.RendererBounds:
+                    EditorGUILayout.LabelField("Renderer 收集", EditorStyles.boldLabel);
+                    placementSettings.rendererLayerMask = EditorGUILayout.MaskField(
+                        "  层级过滤", placementSettings.rendererLayerMask,
+                        GetLayerMaskNames());
+                    placementSettings.boundsMargin = EditorGUILayout.FloatField(
+                        "  包围盒余量", placementSettings.boundsMargin);
+                    placementSettings.maxRendererCount = EditorGUILayout.IntField(
+                        "  最大 Renderer 数", placementSettings.maxRendererCount);
+                    break;
+
+                case ProbePlacementMode.NavMeshSurface:
+                    EditorGUILayout.LabelField("NavMesh 设置", EditorStyles.boldLabel);
+                    placementSettings.navMeshSpacing = EditorGUILayout.FloatField(
+                        "  采样间距", placementSettings.navMeshSpacing);
+                    placementSettings.navMeshSampleRadius = EditorGUILayout.FloatField(
+                        "  采样半径", placementSettings.navMeshSampleRadius);
+                    break;
+            }
+
+            EditorGUILayout.Space(4);
+
+            // 边界探针
+            placementSettings.addBoundaryProbes = EditorGUILayout.Toggle(
+                "添加边界探针", placementSettings.addBoundaryProbes);
+            if (placementSettings.addBoundaryProbes)
+            {
+                placementSettings.boundaryExtend = EditorGUILayout.FloatField(
+                    "  边界延伸", placementSettings.boundaryExtend);
+            }
+
+            placementSettings.minDistance = EditorGUILayout.FloatField(
+                "最小间距(去重)", placementSettings.minDistance);
+            placementSettings.autoBake = EditorGUILayout.Toggle(
+                "布置后自动烘焙", placementSettings.autoBake);
+
+            EditorGUILayout.Space(4);
+
+            // 目标 LightProbeGroup
+            placementTargetGroup = (LightProbeGroup)EditorGUILayout.ObjectField(
+                "目标 LightProbeGroup", placementTargetGroup, typeof(LightProbeGroup), true);
+
+            EditorGUILayout.Space(6);
+
+            // 预览
+            EditorGUILayout.BeginHorizontal();
+            GUI.backgroundColor = new Color(0.6f, 0.8f, 1f);
+            if (GUILayout.Button("👁 预览位置", GUILayout.Height(24)))
+            {
+                Vector3 origin = placementSettings.mode == ProbePlacementMode.GridBounds
+                    ? placementSettings.customBounds.center
+                    : SceneView.lastActiveSceneView != null
+                        ? SceneView.lastActiveSceneView.camera.transform.position
+                        : Vector3.zero;
+                placementPreviewPositions = LightProbePlacementUtility.PreviewPositions(placementSettings, origin);
+                Debug.Log($"[ProbePlacement] 预览生成 {placementPreviewPositions.Length} 个位置");
+                SceneView.RepaintAll();
+            }
+
+            placementShowPreview = EditorGUILayout.Toggle("显示预览", placementShowPreview);
+            EditorGUILayout.EndHorizontal();
+
+            // 同步到 SceneView 静态状态
+            CustomProbeSamplingSceneView.showPlacementPreview = placementShowPreview;
+            CustomProbeSamplingSceneView.placementPreviewPositions = placementPreviewPositions;
+
+            EditorGUILayout.Space(4);
+
+            // 生成按钮
+            GUI.backgroundColor = CLR_OK;
+            if (GUILayout.Button("✚ 生成并写入 LightProbeGroup", GUILayout.Height(30)))
+            {
+                Vector3 origin = placementSettings.mode == ProbePlacementMode.GridBounds
+                    ? placementSettings.customBounds.center
+                    : SceneView.lastActiveSceneView != null
+                        ? SceneView.lastActiveSceneView.camera.transform.position
+                        : Vector3.zero;
+
+                placementTargetGroup = LightProbePlacementUtility.PlaceProbes(
+                    placementSettings, placementTargetGroup, origin);
+
+                // 刷新预览
+                placementPreviewPositions = LightProbePlacementUtility.PreviewPositions(placementSettings, origin);
+                CustomProbeSamplingSceneView.placementPreviewPositions = placementPreviewPositions;
+                SceneView.RepaintAll();
+            }
+            GUI.backgroundColor = Color.white;
+
+            // 显示统计
+            if (placementPreviewPositions != null && placementPreviewPositions.Length > 0)
+            {
+                EditorGUILayout.Space(4);
+                EditorGUILayout.LabelField($"预览: {placementPreviewPositions.Length} 个探针位置",
+                    EditorStyles.miniLabel);
+            }
+
+            EditorGUILayout.EndVertical();
+        }
+
+        static string[] GetLayerMaskNames()
+        {
+            string[] names = new string[32];
+            for (int i = 0; i < 32; i++)
+                names[i] = LayerMask.LayerToName(i);
+            return names;
+        }
+
+        bool DrawFoldHeaderBold(bool foldout, string title, Color color)
+        {
+            Rect r = GUILayoutUtility.GetRect(0, 22, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(r, new Color(color.r * 0.3f, color.g * 0.3f, color.b * 0.3f, 0.5f));
+            EditorGUI.DrawRect(new Rect(r.x, r.y, 3, r.height), color);
+
+            var style = new GUIStyle(EditorStyles.boldLabel)
+            {
+                fontSize = 11,
+                normal = { textColor = color },
+                alignment = TextAnchor.MiddleLeft,
+                padding = new RectOffset(10, 0, 0, 0),
+            };
+
+            string arrow = foldout ? "▼" : "▶";
+            GUI.Label(r, $"{arrow}  {title}", style);
+
+            var e = Event.current;
+            if (e.type == EventType.MouseDown && r.Contains(e.mousePosition))
+            {
+                foldout = !foldout;
+                e.Use();
+                GUI.changed = true;
+            }
+            return foldout;
+        }
     }
 }
 #endif

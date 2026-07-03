@@ -85,13 +85,113 @@ namespace BYTools.EnvTimeline
         const float CoincidentEpsilon = 0.000001f;  // 与运行时一致
         const float WeightFloor = 0.000001f;
 
+        // 四面体插值器缓存（编辑器侧独立使用，不依赖运行时 Controller）
+        static readonly Dictionary<LightProbeSnapshot, TetrahedralInterpolator> _tetraCache
+            = new Dictionary<LightProbeSnapshot, TetrahedralInterpolator>();
+
+        /// <summary>
+        /// 获取指定快照的四面体插值器（编辑器侧缓存）
+        /// </summary>
+        public static TetrahedralInterpolator GetTetraInterpolator(LightProbeSnapshot snap)
+        {
+            if (snap == null || !snap.IsValid) return null;
+
+            TetrahedralInterpolator interp;
+            if (!_tetraCache.TryGetValue(snap, out interp))
+            {
+                interp = new TetrahedralInterpolator();
+                interp.Build(snap.SamplePositions, snap.ProbeCount);
+                _tetraCache[snap] = interp;
+            }
+            return interp;
+        }
+
+        /// <summary>
+        /// 清除四面体插值器缓存
+        /// </summary>
+        public static void InvalidateTetraCache()
+        {
+            _tetraCache.Clear();
+        }
+
+        /// <summary>
+        /// 对指定位置做采样（自动选择 IDW 或四面体模式）。
+        /// </summary>
+        /// <param name="snap">LightProbe 快照</param>
+        /// <param name="position">采样位置（世界空间）</param>
+        /// <param name="neighborCount">邻居数 1~4（仅 IDW 模式使用）</param>
+        /// <param name="mode">插值模式</param>
+        public static CustomProbeSamplingResult Sample(
+            LightProbeSnapshot snap, Vector3 position, int neighborCount,
+            ProbeInterpolationMode mode = ProbeInterpolationMode.InverseDistance)
+        {
+            if (mode == ProbeInterpolationMode.Tetrahedral)
+                return SampleTetrahedral(snap, position);
+            return SampleIDW(snap, position, neighborCount);
+        }
+
+        /// <summary>
+        /// 四面体插值采样
+        /// </summary>
+        public static CustomProbeSamplingResult SampleTetrahedral(
+            LightProbeSnapshot snap, Vector3 position)
+        {
+            var result = new CustomProbeSamplingResult();
+            result.samplePosition = position;
+            result.neighborCount = 4;
+            result.i0 = result.i1 = result.i2 = result.i3 = -1;
+            result.w0 = result.w1 = result.w2 = result.w3 = 0f;
+            result.d0 = result.d1 = result.d2 = result.d3 = float.MaxValue;
+
+            if (snap == null || !snap.IsValid) return result;
+
+            var interp = GetTetraInterpolator(snap);
+            if (interp == null || !interp.IsBuilt)
+            {
+                // 四面体化失败，回退到 IDW
+                return SampleIDW(snap, position, 4);
+            }
+
+            var tetraResult = interp.Sample(position);
+            if (!tetraResult.valid)
+            {
+                return SampleIDW(snap, position, 4);
+            }
+
+            result.i0 = tetraResult.i0; result.w0 = tetraResult.w0;
+            result.i1 = tetraResult.i1; result.w1 = tetraResult.w1;
+            result.i2 = tetraResult.i2; result.w2 = tetraResult.w2;
+            result.i3 = tetraResult.i3; result.w3 = tetraResult.w3;
+
+            // 计算距离（用于可视化标签）
+            var positions = snap.positions;
+            if (positions != null)
+            {
+                if (result.i0 >= 0) result.d0 = (positions[result.i0] - position).sqrMagnitude;
+                if (result.i1 >= 0) result.d1 = (positions[result.i1] - position).sqrMagnitude;
+                if (result.i2 >= 0) result.d2 = (positions[result.i2] - position).sqrMagnitude;
+                if (result.i3 >= 0) result.d3 = (positions[result.i3] - position).sqrMagnitude;
+            }
+
+            // 累加 SH
+            result.blendedSH = AccumulateSH(snap, result.i0, result.w0, default);
+            if (result.i1 >= 0 && result.w1 > 0f)
+                result.blendedSH = AccumulateSH(snap, result.i1, result.w1, result.blendedSH);
+            if (result.i2 >= 0 && result.w2 > 0f)
+                result.blendedSH = AccumulateSH(snap, result.i2, result.w2, result.blendedSH);
+            if (result.i3 >= 0 && result.w3 > 0f)
+                result.blendedSH = AccumulateSH(snap, result.i3, result.w3, result.blendedSH);
+
+            return result;
+        }
+
         /// <summary>
         /// 对指定位置做 N 近邻逆距离加权采样。
         /// </summary>
         /// <param name="snap">LightProbe 快照</param>
         /// <param name="position">采样位置（世界空间）</param>
         /// <param name="neighborCount">邻居数 1~4</param>
-        public static CustomProbeSamplingResult Sample(
+        public static CustomProbeSamplingResult SampleIDW(
             LightProbeSnapshot snap, Vector3 position, int neighborCount)
         {
             var result = new CustomProbeSamplingResult();
@@ -173,7 +273,8 @@ namespace BYTools.EnvTimeline
         /// <summary>对两个快照做混合采样并 Lerp（模拟运行时 from→to 插值）</summary>
         public static SphericalHarmonicsL2 SampleAndLerp(
             LightProbeSnapshot from, LightProbeSnapshot to,
-            Vector3 position, int neighborCount, float t)
+            Vector3 position, int neighborCount, float t,
+            ProbeInterpolationMode mode = ProbeInterpolationMode.InverseDistance)
         {
             bool fromValid = from != null && from.IsValid;
             bool toValid = to != null && to.IsValid;
@@ -182,8 +283,8 @@ namespace BYTools.EnvTimeline
 
             if (fromValid && toValid)
             {
-                var fromSH = Sample(from, position, neighborCount);
-                var toSH = Sample(to, position, neighborCount);
+                var fromSH = Sample(from, position, neighborCount, mode);
+                var toSH = Sample(to, position, neighborCount, mode);
                 if (!fromSH.IsValid && !toSH.IsValid) return default;
                 if (!fromSH.IsValid) return toSH.blendedSH;
                 if (!toSH.IsValid) return fromSH.blendedSH;

@@ -33,6 +33,8 @@ namespace BYTools.EnvTimeline
         [Tooltip("自定义 Light Probe 采样邻居数。4=四近邻加权")]
         [Range(1, 4)]
         public int customLightProbeNeighborCount = 4;
+        [Tooltip("Probe 插值模式：InverseDistance=4近邻逆距离加权（快），Tetrahedral=Delaunay四面体重心坐标（平滑，与Unity原生一致）")]
+        public ProbeInterpolationMode probeInterpolationMode = ProbeInterpolationMode.InverseDistance;
         [Tooltip("缓存每个 Renderer 的邻近 Probe index/weight。静态物体建议开启，可把采样成本从 Renderer×Probe 降到 Renderer×4")]
         public bool cacheCustomProbeWeights = true;
         [Tooltip("更新频率限制（秒）。0=每帧。建议 0.05~0.1 节省性能")]
@@ -74,6 +76,36 @@ namespace BYTools.EnvTimeline
         readonly Dictionary<LightProbeSnapshot, Dictionary<Renderer, CustomProbeWeights>> _customProbeWeightCache
             = new Dictionary<LightProbeSnapshot, Dictionary<Renderer, CustomProbeWeights>>();
         readonly SphericalHarmonicsL2[] _singleProbeBuffer = new SphericalHarmonicsL2[1];
+
+        // 四面体插值器缓存（每个 LightProbeSnapshot 对应一个 TetrahedralInterpolator）
+        readonly Dictionary<LightProbeSnapshot, TetrahedralInterpolator> _tetraInterpolatorCache
+            = new Dictionary<LightProbeSnapshot, TetrahedralInterpolator>();
+
+        /// <summary>
+        /// 获取指定快照的四面体插值器（如未构建则构建并缓存）
+        /// </summary>
+        public TetrahedralInterpolator GetTetraInterpolator(LightProbeSnapshot snap)
+        {
+            if (snap == null || !snap.IsValid) return null;
+
+            TetrahedralInterpolator interp;
+            if (!_tetraInterpolatorCache.TryGetValue(snap, out interp))
+            {
+                interp = new TetrahedralInterpolator();
+                var positions = snap.SamplePositions;
+                interp.Build(positions, snap.ProbeCount);
+                _tetraInterpolatorCache[snap] = interp;
+            }
+            return interp;
+        }
+
+        /// <summary>
+        /// 清除四面体插值器缓存（探针位置变化时调用）
+        /// </summary>
+        public void InvalidateTetraCache()
+        {
+            _tetraInterpolatorCache.Clear();
+        }
 
         class CustomProbeWeights
         {
@@ -451,6 +483,25 @@ namespace BYTools.EnvTimeline
             weights.i0 = weights.i1 = weights.i2 = weights.i3 = -1;
             weights.w0 = weights.w1 = weights.w2 = weights.w3 = 0f;
 
+            // 四面体插值模式
+            if (probeInterpolationMode == ProbeInterpolationMode.Tetrahedral)
+            {
+                var interp = GetTetraInterpolator(snap);
+                if (interp != null && interp.IsBuilt)
+                {
+                    var tetraResult = interp.Sample(position);
+                    if (tetraResult.valid)
+                    {
+                        weights.i0 = tetraResult.i0; weights.w0 = tetraResult.w0;
+                        weights.i1 = tetraResult.i1; weights.w1 = tetraResult.w1;
+                        weights.i2 = tetraResult.i2; weights.w2 = tetraResult.w2;
+                        weights.i3 = tetraResult.i3; weights.w3 = tetraResult.w3;
+                        return;
+                    }
+                }
+                // 四面体化失败或点在凸包外回退到 IDW
+            }
+
             int count = snap.ProbeCount;
             float d0 = float.MaxValue, d1 = float.MaxValue, d2 = float.MaxValue, d3 = float.MaxValue;
             var positions = snap.SamplePositions;
@@ -506,6 +557,28 @@ namespace BYTools.EnvTimeline
         {
             result = default;
             if (snap == null || !snap.IsValid) return false;
+
+            // 四面体插值模式
+            if (probeInterpolationMode == ProbeInterpolationMode.Tetrahedral)
+            {
+                var interp = GetTetraInterpolator(snap);
+                if (interp != null && interp.IsBuilt)
+                {
+                    var tetraResult = interp.Sample(position);
+                    if (tetraResult.valid)
+                    {
+                        AccumulateSnapshotSH(snap, tetraResult.i0, tetraResult.w0, ref result);
+                        if (tetraResult.i1 >= 0 && tetraResult.w1 > 0f)
+                            AccumulateSnapshotSH(snap, tetraResult.i1, tetraResult.w1, ref result);
+                        if (tetraResult.i2 >= 0 && tetraResult.w2 > 0f)
+                            AccumulateSnapshotSH(snap, tetraResult.i2, tetraResult.w2, ref result);
+                        if (tetraResult.i3 >= 0 && tetraResult.w3 > 0f)
+                            AccumulateSnapshotSH(snap, tetraResult.i3, tetraResult.w3, ref result);
+                        return true;
+                    }
+                }
+                // 回退到 IDW
+            }
 
             int count = snap.ProbeCount;
             int neighborCount = Mathf.Clamp(customLightProbeNeighborCount, 1, 4);
@@ -730,6 +803,7 @@ namespace BYTools.EnvTimeline
                 if (kv.Key) kv.Key.lightProbeUsage = kv.Value;
             _originalLightProbeUsages.Clear();
             _customProbeWeightCache.Clear();
+            _tetraInterpolatorCache.Clear();
         }
 
         void OnDisable()

@@ -156,7 +156,26 @@ namespace BYTools.EnvTimeline
 
             if (ctrl.useCustomRendererLightProbes)
             {
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("customLightProbeNeighborCount"));
+                // 🆕 插值模式选择
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("probeInterpolationMode"));
+
+                var modeProp = serializedObject.FindProperty("probeInterpolationMode");
+                var mode = (ProbeInterpolationMode)modeProp.enumValueIndex;
+
+                if (mode == ProbeInterpolationMode.Tetrahedral)
+                {
+                    EditorGUILayout.HelpBox(
+                        "四面体模式：对探针位置做 Delaunay 四面体化，用重心坐标插值。\n" +
+                        "• 与 Unity 原生 LightProbe 行为一致，过渡更平滑\n" +
+                        "• 凸包外的采样点自动回退到逆距离加权\n" +
+                        "• 首次使用会预计算四面体网格（缓存在内存中）",
+                        MessageType.Info);
+                }
+                else
+                {
+                    EditorGUILayout.PropertyField(serializedObject.FindProperty("customLightProbeNeighborCount"));
+                }
+
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("cacheCustomProbeWeights"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("lightProbeUpdateInterval"));
 
@@ -251,6 +270,35 @@ namespace BYTools.EnvTimeline
                 SceneView.RepaintAll();
             }
 
+            // 🆕 插值模式同步到 SceneView
+            EditorGUI.BeginChangeCheck();
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("插值模式", GUILayout.Width(90));
+            var prevMode = CustomProbeSamplingSceneView.interpolationMode;
+            var newMode = (ProbeInterpolationMode)EditorGUILayout.EnumPopup(prevMode);
+            EditorGUILayout.EndHorizontal();
+
+            // 🆕 四面体可视化开关
+            bool prevShowTetra = CustomProbeSamplingSceneView.showTetrahedra;
+            bool newShowTetra = prevShowTetra;
+            bool prevHighlight = CustomProbeSamplingSceneView.highlightContainingTetra;
+            bool newHighlight = prevHighlight;
+
+            if (newMode == ProbeInterpolationMode.Tetrahedral)
+            {
+                newShowTetra = EditorGUILayout.Toggle("显示全部四面体", prevShowTetra);
+                newHighlight = EditorGUILayout.Toggle("高亮包含四面体", prevHighlight);
+            }
+
+            if (EditorGUI.EndChangeCheck())
+            {
+                CustomProbeSamplingSceneView.interpolationMode = newMode;
+                CustomProbeSamplingSceneView.showTetrahedra = newShowTetra;
+                CustomProbeSamplingSceneView.highlightContainingTetra = newHighlight;
+                CustomProbeSamplingSceneView.InvalidateCache();
+                SceneView.RepaintAll();
+            }
+
             EditorGUILayout.Space(4);
 
             // SceneView 可视化开关
@@ -270,7 +318,8 @@ namespace BYTools.EnvTimeline
                 EditorGUILayout.Space(6);
 
                 Vector3 samplePos = debugSampleRenderer.bounds.center;
-                debugResult = CustomProbeSamplingDebugger.Sample(snap, samplePos, nc);
+                debugResult = CustomProbeSamplingDebugger.Sample(snap, samplePos, nc,
+                    CustomProbeSamplingSceneView.interpolationMode);
 
                 // 联动 SceneView
                 CustomProbeSamplingSceneView.debugRenderer = debugSampleRenderer;
