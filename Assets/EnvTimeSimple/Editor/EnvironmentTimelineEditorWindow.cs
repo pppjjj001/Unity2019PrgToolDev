@@ -1201,10 +1201,21 @@ namespace BYTools.EnvTimelineSimple
         // ============================================================
         // 🆕 让用户选择保存目录（统一工具方法）
         // ============================================================
+        const string PREF_LAST_BAKE_FOLDER = "BYTools_EnvTimeline_LastBakeFolder";
+
         bool TryPickAssetsFolder(string title, out string assetRelativeFolder)
         {
             assetRelativeFolder = null;
-            string abs = EditorUtility.OpenFolderPanel(title, "Assets", "");
+
+            // 读取上次使用的烘焙目录，优先打开该位置以减少重复操作
+            string lastRelFolder = EditorPrefs.GetString(PREF_LAST_BAKE_FOLDER, "Assets");
+            string startDir = lastRelFolder;
+            if (lastRelFolder.StartsWith("Assets"))
+                startDir = Application.dataPath + lastRelFolder.Substring("Assets".Length);
+            if (!Directory.Exists(startDir))
+                startDir = Application.dataPath;
+
+            string abs = EditorUtility.OpenFolderPanel(title, startDir, "");
             if (string.IsNullOrEmpty(abs))
                 return false;
 
@@ -1219,6 +1230,10 @@ namespace BYTools.EnvTimelineSimple
                 Directory.CreateDirectory(assetRelativeFolder);
                 AssetDatabase.Refresh();
             }
+
+            // 记忆本次选择的目录，下次烘焙时优先打开
+            EditorPrefs.SetString(PREF_LAST_BAKE_FOLDER, assetRelativeFolder);
+
             return true;
         }
 
@@ -1444,6 +1459,9 @@ namespace BYTools.EnvTimelineSimple
                 string dir = Path.GetDirectoryName(existingCustomPath)?.Replace('\\', '/');
                 string baseName = Path.GetFileNameWithoutExtension(existingCustomPath);
                 filename = $"{dir}/{baseName}.exr";
+                // 记忆该目录，便于后续烘焙优先打开
+                if (!string.IsNullOrEmpty(dir))
+                    EditorPrefs.SetString(PREF_LAST_BAKE_FOLDER, dir);
             }
             else
             {
@@ -1577,6 +1595,9 @@ namespace BYTools.EnvTimelineSimple
                     string dir = Path.GetDirectoryName(existingCustomPath)?.Replace('\\', '/');
                     string baseName = Path.GetFileNameWithoutExtension(existingCustomPath);
                     filename = $"{dir}/{baseName}.exr";
+                    // 记忆该目录，便于后续烘焙优先打开
+                    if (!string.IsNullOrEmpty(dir))
+                        EditorPrefs.SetString(PREF_LAST_BAKE_FOLDER, dir);
                 }
                 else
                 {
