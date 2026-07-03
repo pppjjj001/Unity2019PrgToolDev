@@ -413,7 +413,7 @@ namespace BYTools.EnvTimeline
                 return;
             }
 
-            float bottomReserved = 130f;
+            float bottomReserved = 230f;
             float scrollHeight = position.height - GUILayoutUtility.GetLastRect().yMax - bottomReserved - 10f;
             if (scrollHeight < 100f) scrollHeight = 100f;
 

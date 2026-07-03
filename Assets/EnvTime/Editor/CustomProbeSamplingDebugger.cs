@@ -3,6 +3,7 @@
 // 复刻运行时 EnvironmentTimelineController.BuildProbeWeights 算法，
 // 供 Editor 窗口 / SceneView Gizmo 查询某个 Renderer 的采样结果，不依赖运行时状态
 #if UNITY_EDITOR
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
