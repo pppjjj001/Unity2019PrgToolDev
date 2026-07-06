@@ -133,17 +133,20 @@ namespace BYTools.EnvTimeline
         }
 
         // ============================================================
-        // 5. ★ 自定义 Renderer Light Probe 采样（核心）
+        // 5. ★ LightProbe 采样设置（自动优先使用 LightProbe，退化到 CustomSH）
         // ============================================================
         void DrawCustomSamplingSection(EnvironmentTimelineController ctrl)
         {
             foldCustomSampling = DrawFoldHeader(foldCustomSampling,
-                "🎯 自定义 Renderer Light Probe 采样（绕过场景依赖）", CLR_HEADER_CUSTOM);
+                "🎯 LightProbe 采样设置（自动：LightProbe 优先 → CustomSH 退化）", CLR_HEADER_CUSTOM);
             if (!foldCustomSampling) return;
 
             EditorGUILayout.HelpBox(
-                "此模式不依赖 LightmapSettings.lightProbes，而是用每个节点存储的 LightProbeSnapshot " +
-                "自行做 4 近邻逆距离加权（IDW），结果通过 MaterialPropertyBlock 写入 Renderer，" +
+                "写入 MPB 时自动选择数据源：\n" +
+                "• 节点有 LightProbe 快照 → 采样并写入 unity_SHAr\n" +
+                "• 节点无 LightProbe 快照 → 退化到 CustomSH（来自 ReflectionProbe Cubemap 投影）\n\n" +
+                "不依赖 LightmapSettings.lightProbes，用每个节点存储的 LightProbeSnapshot " +
+                "自行做近邻加权，结果通过 MaterialPropertyBlock 写入 Renderer，" +
                 "并将 lightProbeUsage 改为 CustomProvided。\n\n" +
                 "• 适用于节点间 LightProbe 数量/位置不一致的场景\n" +
                 "• 静态物体建议开启 cacheCustomProbeWeights\n" +
@@ -152,36 +155,30 @@ namespace BYTools.EnvTimeline
 
             EditorGUILayout.Space(4);
 
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("useCustomRendererLightProbes"));
+            // 🆕 插值模式选择
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("probeInterpolationMode"));
 
-            if (ctrl.useCustomRendererLightProbes)
+            var modeProp = serializedObject.FindProperty("probeInterpolationMode");
+            var mode = (ProbeInterpolationMode)modeProp.enumValueIndex;
+
+            if (mode == ProbeInterpolationMode.Tetrahedral)
             {
-                // 🆕 插值模式选择
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("probeInterpolationMode"));
-
-                var modeProp = serializedObject.FindProperty("probeInterpolationMode");
-                var mode = (ProbeInterpolationMode)modeProp.enumValueIndex;
-
-                if (mode == ProbeInterpolationMode.Tetrahedral)
-                {
-                    EditorGUILayout.HelpBox(
-                        "四面体模式：对探针位置做 Delaunay 四面体化，用重心坐标插值。\n" +
-                        "• 与 Unity 原生 LightProbe 行为一致，过渡更平滑\n" +
-                        "• 凸包外的采样点自动回退到逆距离加权\n" +
-                        "• 首次使用会预计算四面体网格（缓存在内存中）",
-                        MessageType.Info);
-                }
-                else
-                {
-                    EditorGUILayout.PropertyField(serializedObject.FindProperty("customLightProbeNeighborCount"));
-                }
-
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("cacheCustomProbeWeights"));
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("lightProbeUpdateInterval"));
-
-                EditorGUILayout.Space(4);
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("prefabRoot"));
+                EditorGUILayout.HelpBox(
+                    "四面体模式：对探针位置做 Delaunay 四面体化，用重心坐标插值。\n" +
+                    "• 与 Unity 原生 LightProbe 行为一致，过渡更平滑\n" +
+                    "• 凸包外的采样点自动回退到逆距离加权\n" +
+                    "• 首次使用会预计算四面体网格（缓存在内存中）",
+                    MessageType.Info);
             }
+            else
+            {
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("customLightProbeNeighborCount"));
+            }
+
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("cacheCustomProbeWeights"));
+
+            EditorGUILayout.Space(4);
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("prefabRoot"));
 
             serializedObject.ApplyModifiedProperties();
         }

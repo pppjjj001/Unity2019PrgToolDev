@@ -87,16 +87,35 @@ namespace BYTools.EnvTimeline
             };
         }
 
-        public void ApplyToMPB(MaterialPropertyBlock mpb, float blend = 1f)
+        /// <summary>
+        /// 直接使用 Unity 原版 SH 属性名 (unity_SHAr / unity_SHAg / …) 写入 MPB。
+        /// 需要配合 Renderer.lightProbeUsage = LightProbeUsage.CustomProvided 使用。
+        /// 不再需要 _CustomSHBlend 参数，直接覆盖原版 SH 变量。
+        /// </summary>
+        public void ApplyToMPB(MaterialPropertyBlock mpb)
         {
-            mpb.SetVector("custom_SHAr", SHAr);
-            mpb.SetVector("custom_SHAg", SHAg);
-            mpb.SetVector("custom_SHAb", SHAb);
-            mpb.SetVector("custom_SHBr", SHBr);
-            mpb.SetVector("custom_SHBg", SHBg);
-            mpb.SetVector("custom_SHBb", SHBb);
-            mpb.SetVector("custom_SHC",  SHC);
-            mpb.SetFloat("_CustomSHBlend", blend);
+            mpb.SetVector("unity_SHAr", SHAr);
+            mpb.SetVector("unity_SHAg", SHAg);
+            mpb.SetVector("unity_SHAb", SHAb);
+            mpb.SetVector("unity_SHBr", SHBr);
+            mpb.SetVector("unity_SHBg", SHBg);
+            mpb.SetVector("unity_SHBb", SHBb);
+            mpb.SetVector("unity_SHC",  SHC);
+        }
+
+        /// <summary>
+        /// 将 SphericalHarmonicsL2 转换为 Unity 风格的 7 个 Vector4 并写入 MPB。
+        /// 用于 LightProbe 采样结果直接写入 Renderer 的 unity_SHAr 等参数。
+        /// </summary>
+        public static void ApplySHL2ToMPB(MaterialPropertyBlock mpb, SphericalHarmonicsL2 sh)
+        {
+            mpb.SetVector("unity_SHAr", new Vector4(sh[0, 3], sh[0, 1], sh[0, 2], sh[0, 0]));
+            mpb.SetVector("unity_SHAg", new Vector4(sh[1, 3], sh[1, 1], sh[1, 2], sh[1, 0]));
+            mpb.SetVector("unity_SHAb", new Vector4(sh[2, 3], sh[2, 1], sh[2, 2], sh[2, 0]));
+            mpb.SetVector("unity_SHBr", new Vector4(sh[0, 4], sh[0, 5], sh[0, 6], sh[0, 7]));
+            mpb.SetVector("unity_SHBg", new Vector4(sh[1, 4], sh[1, 5], sh[1, 6], sh[1, 7]));
+            mpb.SetVector("unity_SHBb", new Vector4(sh[2, 4], sh[2, 5], sh[2, 6], sh[2, 7]));
+            mpb.SetVector("unity_SHC",  new Vector4(sh[0, 8], sh[1, 8], sh[2, 8], 1.0f));
         }
 
         public SphericalHarmonicsL2 ToSHL2()

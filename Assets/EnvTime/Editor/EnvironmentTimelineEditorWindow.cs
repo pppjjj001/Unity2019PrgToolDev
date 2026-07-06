@@ -1414,18 +1414,18 @@ namespace BYTools.EnvTimeline
             {
                 BakeAllNodes();
             }
-            // 🆕 单独烘焙 LightProbe（Unity 2019 兼容）
+            // 🆕 🔆 烘焙 LightProbe 和 💡 批量捕获 并排
     EditorGUILayout.Space(2);
+    EditorGUILayout.BeginHorizontal();
+
     GUI.backgroundColor = new Color(1f, 0.8f, 0.4f);
-    if (GUILayout.Button("🔆 烘焙 LightProbe (仅 LightProbe，不烘焙 Lightmap)", GUILayout.Height(28)))
+    if (GUILayout.Button("🔆 烘焙 LightProbe", GUILayout.Height(30)))
     {
         BakeLightProbesOnlyWithConfirm();
     }
 
-    // 🆕 批量捕获 Light Probe
-    EditorGUILayout.Space(2);
     GUI.backgroundColor = CLR_PROBE;
-    if (GUILayout.Button("💡 为所有节点捕获当前 LightProbe", GUILayout.Height(26)))
+    if (GUILayout.Button("💡 为所有节点捕获当前 LightProbe", GUILayout.Height(30)))
     {
         if (LightmapSettings.lightProbes == null || LightmapSettings.lightProbes.count == 0)
         {
@@ -1443,7 +1443,10 @@ namespace BYTools.EnvTimeline
         }
     }
 
-    // 🆕 烘焙 + 自动捕获到指定节点
+    GUI.backgroundColor = Color.white;
+    EditorGUILayout.EndHorizontal();
+
+    // ⚡ 烘焙并写入选中节点（单独一行）
     EditorGUILayout.Space(2);
     GUI.backgroundColor = new Color(0.6f, 1f, 0.8f);
     if (GUILayout.Button("⚡ 烘焙 LightProbe 并自动写入选中节点", GUILayout.Height(26)))

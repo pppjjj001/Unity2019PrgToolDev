@@ -28,8 +28,6 @@ namespace BYTools.EnvTimeline
         [Header("Light Probe 控制")]
         [Tooltip("启用 Light Probe 数据混合（运行时写入 LightmapSettings.lightProbes）")]
         public bool blendLightProbes = true;
-        [Tooltip("启用自定义 Renderer Light Probe 采样（不依赖 LightmapSettings，使用节点快照做 4 近邻加权并写入 MPB）")]
-        public bool useCustomRendererLightProbes = false;
         [Tooltip("自定义 Light Probe 采样邻居数。4=四近邻加权")]
         [Range(1, 4)]
         public int customLightProbeNeighborCount = 4;
@@ -75,8 +73,6 @@ namespace BYTools.EnvTimeline
             = new Dictionary<Renderer, LightProbeUsage>();
         readonly Dictionary<LightProbeSnapshot, Dictionary<Renderer, CustomProbeWeights>> _customProbeWeightCache
             = new Dictionary<LightProbeSnapshot, Dictionary<Renderer, CustomProbeWeights>>();
-        readonly SphericalHarmonicsL2[] _singleProbeBuffer = new SphericalHarmonicsL2[1];
-
         // 四面体插值器缓存（每个 LightProbeSnapshot 对应一个 TetrahedralInterpolator）
         readonly Dictionary<LightProbeSnapshot, TetrahedralInterpolator> _tetraInterpolatorCache
             = new Dictionary<LightProbeSnapshot, TetrahedralInterpolator>();
@@ -151,8 +147,7 @@ namespace BYTools.EnvTimeline
                 Cubemap toCube   = to.GetMainCubemap();
                 Cubemap mainCube = (t < 0.5f) ? (fromCube ?? toCube) : (toCube ?? fromCube);
 
-                ApplyMPBForNode(from, lerpedSH, mainCube);
-                if (to != from) ApplyMPBForNode(to, lerpedSH, mainCube);
+                ApplyMPBForNode(from, to, t, lerpedSH, mainCube);
             }
 
             if (controlReflectionProbes)
@@ -160,16 +155,13 @@ namespace BYTools.EnvTimeline
                 UpdateProbeActivation(from, to, t);
             }
 
-            // 🆕 Light Probe 混合
-            if (blendLightProbes || useCustomRendererLightProbes)
+            // 🆕 Light Probe 全局混合（写入 LightmapSettings.lightProbes）
+            if (blendLightProbes)
             {
                 if (lightProbeUpdateInterval <= 0f ||
                     Time.realtimeSinceStartup - _lastLightProbeUpdateTime >= lightProbeUpdateInterval)
                 {
-                    if (blendLightProbes)
-                        ApplyLightProbeBlend(from, to, t);
-                    if (useCustomRendererLightProbes)
-                        ApplyCustomRendererLightProbes(from, to, t);
+                    ApplyLightProbeBlend(from, to, t);
                     _lastLightProbeUpdateTime = Time.realtimeSinceStartup;
                 }
             }
@@ -311,61 +303,6 @@ namespace BYTools.EnvTimeline
             if (lp != null && lp.count == _originalBakedProbes.Length)
             {
                 lp.bakedProbes = _originalBakedProbes;
-            }
-        }
-
-        void ApplyCustomRendererLightProbes(EnvTimeNode from, EnvTimeNode to, float t)
-        {
-            var fromData = from != null ? from.lightProbeData : null;
-            var toData = to != null ? to.lightProbeData : null;
-            bool fromValid = fromData != null && fromData.IsValid;
-            bool toValid = toData != null && toData.IsValid;
-            if (!fromValid && !toValid) return;
-
-            _customProbeRenderers.Clear();
-            CollectRenderersFromNode(from, _customProbeRenderers);
-            CollectRenderersFromNode(to, _customProbeRenderers);
-
-            foreach (var r in _customProbeRenderers)
-            {
-                if (!r) continue;
-
-                // ⭐ Prefab 空间支持：将 Renderer 世界位置逆变换到快照的采样空间
-                Vector3 worldPosition = r.bounds.center;
-                Vector3 samplePosition = TransformSamplePosition(worldPosition);
-
-                SphericalHarmonicsL2 fromSH = new SphericalHarmonicsL2();
-                SphericalHarmonicsL2 toSH = new SphericalHarmonicsL2();
-                bool hasFrom = fromValid && SampleSnapshot(fromData, r, samplePosition, out fromSH);
-                bool hasTo = toValid && SampleSnapshot(toData, r, samplePosition, out toSH);
-                if (!hasFrom && !hasTo) continue;
-
-                SphericalHarmonicsL2 result;
-                if (hasFrom && hasTo)
-                    result = LerpSH(fromSH, toSH, t);
-                else
-                    result = hasFrom ? fromSH : toSH;
-
-                // ⭐ Prefab 空间支持：旋转 SH 系数以匹配当前 Prefab 朝向
-                result = RotateSampledSH(result);
-
-                MaterialPropertyBlock mpb;
-                if (!_mpbCache.TryGetValue(r, out mpb))
-                {
-                    mpb = new MaterialPropertyBlock();
-                    _mpbCache[r] = mpb;
-                }
-
-                if (!_originalLightProbeUsages.ContainsKey(r))
-                    _originalLightProbeUsages.Add(r, r.lightProbeUsage);
-
-                if (r.lightProbeUsage != LightProbeUsage.CustomProvided)
-                    r.lightProbeUsage = LightProbeUsage.CustomProvided;
-
-                r.GetPropertyBlock(mpb);
-                _singleProbeBuffer[0] = result;
-                mpb.CopySHCoefficientArraysFrom(_singleProbeBuffer);
-                r.SetPropertyBlock(mpb);
             }
         }
 
@@ -681,39 +618,91 @@ namespace BYTools.EnvTimeline
         }
 
         // ===========================================================
-        // 既有逻辑
+        // MPB 写入：LightProbe 优先，CustomSH 退化
         // ===========================================================
-        void ApplyMPBForNode(EnvTimeNode node, SerializedSH lerpedSH, Cubemap mainCube)
+        void ApplyMPBForNode(EnvTimeNode from, EnvTimeNode to, float t,
+            SerializedSH lerpedSH, Cubemap mainCube)
         {
-            foreach (var go in node.affectedTargets)
+            // 收集 from/to 两个节点的所有 Renderer（去重）
+            _customProbeRenderers.Clear();
+            CollectRenderersFromNode(from, _customProbeRenderers);
+            if (to != from) CollectRenderersFromNode(to, _customProbeRenderers);
+
+            // 检查 LightProbe 快照是否可用
+            var fromData = from != null ? from.lightProbeData : null;
+            var toData = to != null ? to.lightProbeData : null;
+            bool fromValid = fromData != null && fromData.IsValid;
+            bool toValid = toData != null && toData.IsValid;
+
+            foreach (var r in _customProbeRenderers)
             {
-                if (!go) continue;
-                Renderer[] renderers = node.includeChildren
-                    ? go.GetComponentsInChildren<Renderer>(true)
-                    : go.GetComponents<Renderer>();
+                if (!r) continue;
 
-                foreach (var r in renderers)
+                // 缓存原始 LightProbeUsage 并切换为 CustomProvided
+                if (!_originalLightProbeUsages.ContainsKey(r))
+                    _originalLightProbeUsages[r] = r.lightProbeUsage;
+                if (r.lightProbeUsage != LightProbeUsage.CustomProvided)
+                    r.lightProbeUsage = LightProbeUsage.CustomProvided;
+
+                MaterialPropertyBlock mpb;
+                if (!_mpbCache.TryGetValue(r, out mpb))
                 {
-                    if (!r) continue;
-
-                    MaterialPropertyBlock mpb;
-                    if (!_mpbCache.TryGetValue(r, out mpb))
-                    {
-                        mpb = new MaterialPropertyBlock();
-                        _mpbCache[r] = mpb;
-                    }
-                    r.GetPropertyBlock(mpb);
-
-                    lerpedSH.ApplyToMPB(mpb, 1f);
-
-                    if (writeMainCubemapToMaterial && mainCube != null
-                        && !string.IsNullOrEmpty(envCubemapPropName))
-                    {
-                        mpb.SetTexture(envCubemapPropName, mainCube);
-                    }
-
-                    r.SetPropertyBlock(mpb);
+                    mpb = new MaterialPropertyBlock();
+                    _mpbCache[r] = mpb;
                 }
+                r.GetPropertyBlock(mpb);
+
+                // ★ LightProbe 优先：有 LightProbe 数据时采样写入 unity_SHAr
+                bool useLightProbe = false;
+                SphericalHarmonicsL2 sampledSH = default;
+
+                if (fromValid || toValid)
+                {
+                    Vector3 worldPosition = r.bounds.center;
+                    Vector3 samplePosition = TransformSamplePosition(worldPosition);
+
+                    SphericalHarmonicsL2 fromSH = default, toSH = default;
+                    bool hasFrom = fromValid && SampleSnapshot(fromData, r, samplePosition, out fromSH);
+                    bool hasTo = toValid && SampleSnapshot(toData, r, samplePosition, out toSH);
+
+                    if (hasFrom && hasTo)
+                    {
+                        sampledSH = LerpSH(fromSH, toSH, t);
+                        useLightProbe = true;
+                    }
+                    else if (hasFrom)
+                    {
+                        sampledSH = fromSH;
+                        useLightProbe = true;
+                    }
+                    else if (hasTo)
+                    {
+                        sampledSH = toSH;
+                        useLightProbe = true;
+                    }
+
+                    if (useLightProbe)
+                        sampledSH = RotateSampledSH(sampledSH);
+                }
+
+                if (useLightProbe)
+                {
+                    // LightProbe 采样结果 → unity_SHAr 等原生参数
+                    SerializedSH.ApplySHL2ToMPB(mpb, sampledSH);
+                }
+                else
+                {
+                    // 退化：CustomSH（来自 ReflectionProbe Cubemap 投影）→ unity_SHAr 等原生参数
+                    lerpedSH.ApplyToMPB(mpb);
+                }
+
+                if (writeMainCubemapToMaterial && mainCube != null
+                    && !string.IsNullOrEmpty(envCubemapPropName))
+                {
+                    mpb.SetTexture(envCubemapPropName, mainCube);
+                }
+
+                r.SetPropertyBlock(mpb);
             }
         }
 
