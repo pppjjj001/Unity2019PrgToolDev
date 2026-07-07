@@ -103,6 +103,24 @@ namespace BYTools.EnvTimelineSimple
             mpb.SetVector("unity_SHC",  SHC);
         }
 
+        /// <summary>
+        /// 将 SH 系数直接写入材质实例（而非 MPB）。
+        /// 用于运行模式下对 SkinnedMeshRenderer 使用材质实例覆盖的场景。
+        /// ⚠️ 会修改材质实例属性，需确保使用的是材质副本而非共享材质。
+        /// 同样需要配合 Renderer.lightProbeUsage = LightProbeUsage.CustomProvided 使用。
+        /// </summary>
+        public void ApplyToMaterial(Material mat)
+        {
+            if (mat == null) return;
+            mat.SetVector("unity_SHAr", SHAr);
+            mat.SetVector("unity_SHAg", SHAg);
+            mat.SetVector("unity_SHAb", SHAb);
+            mat.SetVector("unity_SHBr", SHBr);
+            mat.SetVector("unity_SHBg", SHBg);
+            mat.SetVector("unity_SHBb", SHBb);
+            mat.SetVector("unity_SHC",  SHC);
+        }
+
         public SphericalHarmonicsL2 ToSHL2()
         {
             var sh = new SphericalHarmonicsL2();

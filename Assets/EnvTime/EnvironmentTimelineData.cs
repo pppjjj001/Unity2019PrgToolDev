@@ -118,6 +118,41 @@ namespace BYTools.EnvTimeline
             mpb.SetVector("unity_SHC",  new Vector4(sh[0, 8], sh[1, 8], sh[2, 8], 1.0f));
         }
 
+        /// <summary>
+        /// 将 SH 系数直接写入材质实例（而非 MPB）。
+        /// 用于运行模式下对 SkinnedMeshRenderer 使用材质实例覆盖的场景。
+        /// ⚠️ 会修改材质实例属性，需确保使用的是材质副本而非共享材质。
+        /// 同样需要配合 Renderer.lightProbeUsage = LightProbeUsage.CustomProvided 使用。
+        /// </summary>
+        public void ApplyToMaterial(Material mat)
+        {
+            if (mat == null) return;
+            mat.SetVector("unity_SHAr", SHAr);
+            mat.SetVector("unity_SHAg", SHAg);
+            mat.SetVector("unity_SHAb", SHAb);
+            mat.SetVector("unity_SHBr", SHBr);
+            mat.SetVector("unity_SHBg", SHBg);
+            mat.SetVector("unity_SHBb", SHBb);
+            mat.SetVector("unity_SHC",  SHC);
+        }
+
+        /// <summary>
+        /// 将 SphericalHarmonicsL2 直接写入材质实例（而非 MPB）。
+        /// 用于 LightProbe 采样结果直接写入 SkinnedMeshRenderer 的材质。
+        /// ⚠️ 同样需要 CustomProvided + 材质副本。
+        /// </summary>
+        public static void ApplySHL2ToMaterial(Material mat, SphericalHarmonicsL2 sh)
+        {
+            if (mat == null) return;
+            mat.SetVector("unity_SHAr", new Vector4(sh[0, 3], sh[0, 1], sh[0, 2], sh[0, 0]));
+            mat.SetVector("unity_SHAg", new Vector4(sh[1, 3], sh[1, 1], sh[1, 2], sh[1, 0]));
+            mat.SetVector("unity_SHAb", new Vector4(sh[2, 3], sh[2, 1], sh[2, 2], sh[2, 0]));
+            mat.SetVector("unity_SHBr", new Vector4(sh[0, 4], sh[0, 5], sh[0, 6], sh[0, 7]));
+            mat.SetVector("unity_SHBg", new Vector4(sh[1, 4], sh[1, 5], sh[1, 6], sh[1, 7]));
+            mat.SetVector("unity_SHBb", new Vector4(sh[2, 4], sh[2, 5], sh[2, 6], sh[2, 7]));
+            mat.SetVector("unity_SHC",  new Vector4(sh[0, 8], sh[1, 8], sh[2, 8], 1.0f));
+        }
+
         public SphericalHarmonicsL2 ToSHL2()
         {
             var sh = new SphericalHarmonicsL2();

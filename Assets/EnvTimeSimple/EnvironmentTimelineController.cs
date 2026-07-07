@@ -24,6 +24,13 @@ namespace BYTools.EnvTimelineSimple
         [Header("ReflectionProbe 控制")]
         public bool controlReflectionProbes = true;
 
+        [Header("运行模式 - SkinnedMeshRenderer 材质覆盖")]
+        [Tooltip("运行模式下，对 SkinnedMeshRenderer 使用材质实例直接修改（而非 MPB）。\n" +
+                 "✅ 优势：不破坏 SRP Batcher（MPB 会破坏），多材质子网格全部覆盖。\n" +
+                 "⚠️ 弊端：会创建材质实例副本，增加少量内存，需手动清理。\n" +
+                 "编辑模式始终使用 MPB，不受此选项影响。")]
+        public bool useMaterialInstanceForSkinnedMesh = false;
+
         private EnvironmentTimelineData _timelineData;
         public EnvironmentTimelineData timelineData
         {
@@ -39,6 +46,13 @@ namespace BYTools.EnvTimelineSimple
             = new Dictionary<Renderer, MaterialPropertyBlock>();
         readonly Dictionary<Renderer, LightProbeUsage> _originalLightProbeUsages
             = new Dictionary<Renderer, LightProbeUsage>();
+
+        // 运行模式材质实例缓存（仅 SkinnedMeshRenderer）
+        // Value 为材质数组，支持多子网格/多材质
+        readonly Dictionary<Renderer, Material[]> _materialInstanceCache
+            = new Dictionary<Renderer, Material[]>();
+        readonly Dictionary<Renderer, Material[]> _originalSharedMaterials
+            = new Dictionary<Renderer, Material[]>();
 
         readonly HashSet<ReflectionProbe> _currentActiveProbes = new HashSet<ReflectionProbe>();
         readonly HashSet<ReflectionProbe> _nextActiveProbes = new HashSet<ReflectionProbe>();
@@ -116,23 +130,77 @@ namespace BYTools.EnvTimelineSimple
                     if (r.lightProbeUsage != LightProbeUsage.CustomProvided)
                         r.lightProbeUsage = LightProbeUsage.CustomProvided;
 
-                    MaterialPropertyBlock mpb;
-                    if (!_mpbCache.TryGetValue(r, out mpb))
+                    // 运行模式下，SkinnedMeshRenderer 可选使用材质实例直接修改
+                    if (Application.isPlaying && useMaterialInstanceForSkinnedMesh
+                        && r is SkinnedMeshRenderer)
                     {
-                        mpb = new MaterialPropertyBlock();
-                        _mpbCache[r] = mpb;
+                        ApplyToMaterialInstance(r, lerpedSH, mainCube);
                     }
-                    r.GetPropertyBlock(mpb);
-
-                    lerpedSH.ApplyToMPB(mpb);
-
-                    if (writeMainCubemapToMaterial && mainCube != null
-                        && !string.IsNullOrEmpty(envCubemapPropName))
+                    else
                     {
-                        mpb.SetTexture(envCubemapPropName, mainCube);
-                    }
+                        // 默认 MPB 方式（编辑模式始终走此分支）
+                        MaterialPropertyBlock mpb;
+                        if (!_mpbCache.TryGetValue(r, out mpb))
+                        {
+                            mpb = new MaterialPropertyBlock();
+                            _mpbCache[r] = mpb;
+                        }
+                        r.GetPropertyBlock(mpb);
 
-                    r.SetPropertyBlock(mpb);
+                        lerpedSH.ApplyToMPB(mpb);
+
+                        if (writeMainCubemapToMaterial && mainCube != null
+                            && !string.IsNullOrEmpty(envCubemapPropName))
+                        {
+                            mpb.SetTexture(envCubemapPropName, mainCube);
+                        }
+
+                        r.SetPropertyBlock(mpb);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// 对 SkinnedMeshRenderer 使用材质实例直接写入 SH 和 Cubemap。
+        /// 支持多子网格/多材质：会为 sharedMaterials 中的每个材质创建副本。
+        /// 首次调用时创建材质副本数组并替换到 Renderer，后续直接修改材质属性。
+        /// ⚠️ 材质实例需在 ClearAllMPB / OnDisable 中手动销毁，否则内存泄漏。
+        /// ✅ 使用材质实例（同 shader）不会破坏 SRP Batcher，而 MPB 会。
+        /// </summary>
+        void ApplyToMaterialInstance(Renderer r, SerializedSH lerpedSH, Cubemap mainCube)
+        {
+            Material[] matInstances;
+            if (!_materialInstanceCache.TryGetValue(r, out matInstances))
+            {
+                // 缓存原始 sharedMaterials（用于恢复）
+                Material[] originals = r.sharedMaterials;
+                _originalSharedMaterials[r] = (Material[])originals.Clone();
+
+                // 为每个子材质创建实例副本
+                matInstances = new Material[originals.Length];
+                for (int i = 0; i < originals.Length; i++)
+                {
+                    if (originals[i] == null) continue;
+                    matInstances[i] = new Material(originals[i]);
+                    matInstances[i].name = originals[i].name + "_EnvRuntime";
+                }
+                _materialInstanceCache[r] = matInstances;
+
+                // 将实例数组赋给 Renderer
+                r.sharedMaterials = matInstances;
+            }
+
+            // 向所有材质实例写入 SH 系数和 Cubemap
+            for (int i = 0; i < matInstances.Length; i++)
+            {
+                if (matInstances[i] == null) continue;
+                lerpedSH.ApplyToMaterial(matInstances[i]);
+
+                if (writeMainCubemapToMaterial && mainCube != null
+                    && !string.IsNullOrEmpty(envCubemapPropName))
+                {
+                    matInstances[i].SetTexture(envCubemapPropName, mainCube);
                 }
             }
         }
@@ -200,14 +268,44 @@ namespace BYTools.EnvTimelineSimple
 
         public void ClearAllMPB()
         {
+            // 清理 MPB
             foreach (var kv in _mpbCache)
                 if (kv.Key) kv.Key.SetPropertyBlock(null);
             _mpbCache.Clear();
+
+            // 清理材质实例（恢复原始 sharedMaterials 并销毁实例）
+            ClearMaterialInstances();
 
             // 恢复原始 LightProbeUsage
             foreach (var kv in _originalLightProbeUsages)
                 if (kv.Key) kv.Key.lightProbeUsage = kv.Value;
             _originalLightProbeUsages.Clear();
+        }
+
+        /// <summary>
+        /// 清理所有运行时创建的材质实例，恢复 Renderer 的原始 sharedMaterials。
+        /// </summary>
+        public void ClearMaterialInstances()
+        {
+            foreach (var kv in _materialInstanceCache)
+            {
+                if (kv.Key && _originalSharedMaterials.TryGetValue(kv.Key, out var originals))
+                    kv.Key.sharedMaterials = originals;
+
+                if (kv.Value != null)
+                {
+                    for (int i = 0; i < kv.Value.Length; i++)
+                    {
+                        if (kv.Value[i] == null) continue;
+                        if (Application.isPlaying)
+                            Destroy(kv.Value[i]);
+                        else
+                            DestroyImmediate(kv.Value[i]);
+                    }
+                }
+            }
+            _materialInstanceCache.Clear();
+            _originalSharedMaterials.Clear();
         }
 
         void OnDisable()
