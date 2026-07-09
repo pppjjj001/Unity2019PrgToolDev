@@ -7,7 +7,7 @@ using UnityEngine.Rendering;
 namespace BYTools.EnvTimeline
 {
     [DisallowMultipleComponent]
-    public class EnvironmentTimelineData : MonoBehaviour
+    public class EnvironmentTimelineProData : MonoBehaviour
     {
         [Tooltip("时间轴总长度（如 24 表示 24 小时）")]
         public float totalDuration = 24f;
@@ -351,6 +351,10 @@ namespace BYTools.EnvTimeline
         [Header("影响目标")]
         public List<GameObject> affectedTargets = new List<GameObject>();
         public bool includeChildren = true;
+
+        [Header("ReflectionProbe 烘焙参与模型")]
+        [Tooltip("烘焙此节点时，将这些 GameObject 及其递归所有子物体临时勾选 ReflectionProbeStatic 以参与烘焙，烘焙结束后自动还原。")]
+        public List<GameObject> reflectionProbeBakeTargets = new List<GameObject>();
 
         [Header("烘焙参数")]
         public int sampleResolution = 64;

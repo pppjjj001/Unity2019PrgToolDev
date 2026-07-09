@@ -1,4 +1,4 @@
-﻿//EnvironmentTimelinePlayableAsset.cs
+﻿﻿//EnvironmentTimelinePlayableAsset.cs
 using UnityEngine;
 using UnityEngine.Playables;
 using UnityEngine.Timeline;
@@ -6,12 +6,8 @@ using UnityEngine.Timeline;
 namespace BYTools.EnvTimeline
 {
     [System.Serializable]
-    public class EnvironmentTimelinePlayableAsset : PlayableAsset, ITimelineClipAsset
+    public class EnvironmentTimelineProPlayableAsset : PlayableAsset, ITimelineClipAsset
     {
-        [Header("时间轴配置")]
-        [Tooltip("环境时间轴资源")]
-        public EnvironmentTimelineData timelineAsset;
-
         [Header("时间映射")]
         [Tooltip("Timeline 区间映射模式")]
         public TimeRemapMode remapMode = TimeRemapMode.PercentageMap;
@@ -33,13 +29,12 @@ namespace BYTools.EnvTimeline
 
         public override Playable CreatePlayable(PlayableGraph graph, GameObject owner)
         {
-            var playable = ScriptPlayable<EnvironmentTimelinePlayableBehaviour>.Create(graph);
+            var playable = ScriptPlayable<EnvironmentTimelineProPlayableBehaviour>.Create(graph);
             var behaviour = playable.GetBehaviour();
 
-            behaviour.timelineAsset = timelineAsset;
             behaviour.remapMode = remapMode;
             behaviour.startTime = startTime;
-            behaviour.endTime = endTime > 0 ? endTime : (timelineAsset ? timelineAsset.totalDuration : 24f);
+            behaviour.endTime = endTime;
             behaviour.autoControl = autoControl;
             behaviour.holdOnStop = holdOnStop;
 

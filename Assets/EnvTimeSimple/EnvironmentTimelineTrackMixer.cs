@@ -2,7 +2,7 @@
 using UnityEngine;
 using UnityEngine.Playables;
 
-namespace BYTools.EnvTimelineSimple
+namespace Hotfix.Core.EnvTimelineSimple
 {
     public class EnvironmentTimelineTrackMixer : PlayableBehaviour
     {
@@ -25,11 +25,14 @@ namespace BYTools.EnvTimelineSimple
                     var inputPlayable = (ScriptPlayable<EnvironmentTimelinePlayableBehaviour>)playable.GetInput(i);
                     var behaviour = inputPlayable.GetBehaviour();
 
-                    if (behaviour != null && behaviour.timelineAsset != null)
+                    if (behaviour != null && behaviour.autoControl)
                     {
                         float clipTime = (float)inputPlayable.GetTime();
                         float clipDuration = (float)inputPlayable.GetDuration();
-                        float envTime = RemapTime(behaviour, clipTime, clipDuration);
+                        // endTime <= 0 时使用 timelineData.totalDuration
+                        float actualEndTime = behaviour.endTime > 0 ? behaviour.endTime
+                            : (controller.timelineData != null ? controller.timelineData.totalDuration : 24f);
+                        float envTime = RemapTime(behaviour, clipTime, clipDuration, actualEndTime);
 
                         blendedTime += envTime * weight;
                         totalWeight += weight;
@@ -44,19 +47,19 @@ namespace BYTools.EnvTimelineSimple
             }
         }
 
-        private float RemapTime(EnvironmentTimelinePlayableBehaviour behaviour, float clipTime, float clipDuration)
+        private float RemapTime(EnvironmentTimelinePlayableBehaviour behaviour, float clipTime, float clipDuration, float actualEndTime)
         {
             switch (behaviour.remapMode)
             {
                 case TimeRemapMode.PercentageMap:
                     float percent = clipDuration > 0 ? Mathf.Clamp01(clipTime / clipDuration) : 0f;
-                    return Mathf.Lerp(behaviour.startTime, behaviour.endTime, percent);
+                    return Mathf.Lerp(behaviour.startTime, actualEndTime, percent);
 
                 case TimeRemapMode.DirectMap:
                     return clipTime;
 
                 case TimeRemapMode.ScaledMap:
-                    float scale = clipDuration > 0 ? (behaviour.endTime - behaviour.startTime) / clipDuration : 1f;
+                    float scale = clipDuration > 0 ? (actualEndTime - behaviour.startTime) / clipDuration : 1f;
                     return behaviour.startTime + clipTime * scale;
 
                 default:

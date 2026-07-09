@@ -2,11 +2,12 @@
 #if UNITY_EDITOR
 using UnityEditor;
 using UnityEngine;
+using Hotfix.Core.EnvTimelineSimple;
 
 namespace BYTools.EnvTimelineSimple
 {
     [CustomEditor(typeof(EnvironmentTimelinePlayableAsset))]
-    public class EnvironmentTimelinePlayableAssetEditor : Editor
+    public class EnvTimelineSimplePlayableAssetEditor : Editor
     {
         public override void OnInspectorGUI()
         {
@@ -16,21 +17,10 @@ namespace BYTools.EnvTimelineSimple
 
             EditorGUILayout.HelpBox(
                 "此 Clip 将 Unity Timeline 的时间映射到环境时间轴上。\n" +
-                "可通过不同的映射模式控制时间关系。",
+                "可通过不同的映射模式控制时间关系。\n\n" +
+                "⚠️ 环境数据通过 Track Binding 获取：\n" +
+                "请在 Track 上绑定带有 EnvironmentTimelineController 的 GameObject。",
                 MessageType.Info);
-
-            EditorGUILayout.Space();
-
-            // 时间轴资源
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("timelineAsset"));
-
-            if (asset.timelineAsset != null)
-            {
-                EditorGUILayout.HelpBox(
-                    $"时间轴总长: {asset.timelineAsset.totalDuration:F2}\n" +
-                    $"节点数量: {asset.timelineAsset.nodes.Count}",
-                    MessageType.None);
-            }
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("时间映射设置", EditorStyles.boldLabel);
@@ -68,10 +58,10 @@ namespace BYTools.EnvTimelineSimple
             EditorGUILayout.PropertyField(serializedObject.FindProperty("startTime"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("endTime"));
 
-            if (asset.timelineAsset != null && asset.endTime < 0)
+            if (asset.endTime < 0)
             {
                 EditorGUILayout.HelpBox(
-                    $"结束时间为 -1，将使用时间轴总长 {asset.timelineAsset.totalDuration:F2}",
+                    "结束时间为 -1，运行时将自动使用 EnvironmentTimelineData.totalDuration",
                     MessageType.Info);
             }
 

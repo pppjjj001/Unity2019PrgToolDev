@@ -339,7 +339,61 @@ namespace BYTools.EnvTimeline
     }
     public class EnvironmentTimelineEditorWindow : EditorWindow
     {
-        EnvironmentTimelineData data;
+        /// <summary>
+        /// 临时勾选 ReflectionProbeStatic 的作用域。
+        /// Create 时记录原始 StaticEditorFlags 并对未勾选的 GO 及其递归子物体设置 ReflectionProbeStatic，
+        /// Dispose 时还原全部原始状态。配合 using 语句确保异常 / 取消时也能还原。
+        /// </summary>
+        struct ReflectionProbeStaticScope : IDisposable
+        {
+            Dictionary<GameObject, StaticEditorFlags> _originalFlags;
+
+            public static ReflectionProbeStaticScope Create(List<GameObject> targets)
+            {
+                var scope = new ReflectionProbeStaticScope();
+                if (targets == null || targets.Count == 0) return scope;
+
+                scope._originalFlags = new Dictionary<GameObject, StaticEditorFlags>();
+                var visited = new HashSet<GameObject>();
+                foreach (var go in targets)
+                {
+                    if (go == null) continue;
+                    CollectAndSetStatic(go, scope._originalFlags, visited);
+                }
+                return scope;
+            }
+
+            static void CollectAndSetStatic(GameObject go,
+                Dictionary<GameObject, StaticEditorFlags> dict,
+                HashSet<GameObject> visited)
+            {
+                if (go == null || visited.Contains(go)) return;
+                visited.Add(go);
+
+                var flags = GameObjectUtility.GetStaticEditorFlags(go);
+                dict[go] = flags;
+
+                if ((flags & StaticEditorFlags.ReflectionProbeStatic) == 0)
+                    GameObjectUtility.SetStaticEditorFlags(
+                        go, flags | StaticEditorFlags.ReflectionProbeStatic);
+
+                foreach (Transform child in go.transform)
+                    CollectAndSetStatic(child.gameObject, dict, visited);
+            }
+
+            public void Dispose()
+            {
+                if (_originalFlags == null) return;
+                foreach (var kv in _originalFlags)
+                {
+                    if (kv.Key != null)
+                        GameObjectUtility.SetStaticEditorFlags(kv.Key, kv.Value);
+                }
+                _originalFlags.Clear();
+            }
+        }
+
+        EnvironmentTimelineProData data;
         Vector2 mainScroll;
         int selectedNodeIndex = -1;
 
@@ -477,8 +531,8 @@ namespace BYTools.EnvTimeline
         {
             EditorGUILayout.BeginHorizontal();
             EditorGUI.BeginChangeCheck();
-            data = (EnvironmentTimelineData)EditorGUILayout.ObjectField(
-                "Timeline Data", data, typeof(EnvironmentTimelineData), true);
+            data = (EnvironmentTimelineProData)EditorGUILayout.ObjectField(
+                "Timeline Data", data, typeof(EnvironmentTimelineProData), true);
 
             if (EditorGUI.EndChangeCheck() && data != null)
             {
@@ -490,7 +544,7 @@ namespace BYTools.EnvTimeline
             {
                 if (Selection.activeGameObject != null)
                 {
-                    data = Selection.activeGameObject.GetComponent<EnvironmentTimelineData>();
+                    data = Selection.activeGameObject.GetComponent<EnvironmentTimelineProData>();
                     if (data == null)
                     {
                         EditorUtility.DisplayDialog("提示",
@@ -525,8 +579,8 @@ namespace BYTools.EnvTimeline
         void CreateNewTimelineInScene()
         {
             GameObject go = new GameObject("EnvironmentTimeline");
-            data = go.AddComponent<EnvironmentTimelineData>();
-            var controller = go.AddComponent<EnvironmentTimelineController>();
+            data = go.AddComponent<EnvironmentTimelineProData>();
+            var controller = go.AddComponent<EnvironmentTimelineProController>();
 
             Undo.RegisterCreatedObjectUndo(go, "Create Timeline");
             Selection.activeGameObject = go;
@@ -860,7 +914,7 @@ namespace BYTools.EnvTimeline
         {
             if (data == null) return;
 
-            var ctrl = data.GetComponent<EnvironmentTimelineController>();
+            var ctrl = data.GetComponent<EnvironmentTimelineProController>();
             if (ctrl != null)
             {
                 ctrl.currentTime = previewTime;
@@ -1170,6 +1224,52 @@ namespace BYTools.EnvTimeline
             }
             GUI.backgroundColor = Color.white;
             EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.Space(6);
+            DrawSectionHeader($"ReflectionProbe 烘焙参与模型 ({node.reflectionProbeBakeTargets.Count})", CLR_INFO, "🔄");
+            EditorGUILayout.HelpBox(
+                "烘焙此节点时，将列表中的 GameObject 及其递归所有子物体临时勾选 ReflectionProbeStatic 以参与烘焙。\n烘焙结束后自动还原原始状态。",
+                MessageType.Info);
+
+            EditorGUILayout.BeginHorizontal();
+            GUI.backgroundColor = CLR_INFO;
+            if (GUILayout.Button("使用当前选中物体填充"))
+            {
+                Undo.RecordObject(data, "Fill Bake Targets");
+                node.reflectionProbeBakeTargets.Clear();
+                foreach (var go in Selection.gameObjects)
+                    if (go) node.reflectionProbeBakeTargets.Add(go);
+            }
+            if (GUILayout.Button("追加当前选中物体"))
+            {
+                Undo.RecordObject(data, "Append Bake Targets");
+                foreach (var go in Selection.gameObjects)
+                    if (go && !node.reflectionProbeBakeTargets.Contains(go)) node.reflectionProbeBakeTargets.Add(go);
+            }
+            GUI.backgroundColor = CLR_ERROR;
+            if (GUILayout.Button("清空", GUILayout.Width(50)))
+            {
+                node.reflectionProbeBakeTargets.Clear();
+            }
+            GUI.backgroundColor = Color.white;
+            EditorGUILayout.EndHorizontal();
+
+            int rmBakeTarget = -1;
+            for (int i = 0; i < node.reflectionProbeBakeTargets.Count; i++)
+            {
+                EditorGUILayout.BeginHorizontal();
+                node.reflectionProbeBakeTargets[i] = (GameObject)EditorGUILayout.ObjectField(
+                    node.reflectionProbeBakeTargets[i], typeof(GameObject), true);
+                GUI.backgroundColor = CLR_ERROR;
+                if (GUILayout.Button("✕", GUILayout.Width(22))) rmBakeTarget = i;
+                GUI.backgroundColor = Color.white;
+                EditorGUILayout.EndHorizontal();
+            }
+            if (rmBakeTarget >= 0) node.reflectionProbeBakeTargets.RemoveAt(rmBakeTarget);
+
+            Rect bakeDropRect = GUILayoutUtility.GetRect(0, 24, GUILayout.ExpandWidth(true));
+            GUI.Box(bakeDropRect, "← 拖拽 GameObject 添加");
+            HandleGODropToList(bakeDropRect, node.reflectionProbeBakeTargets);
 
             EditorGUILayout.Space(6);
             DrawSectionHeader($"影响的模型 ({node.affectedTargets.Count})", CLR_INFO, "🎯");
@@ -1573,6 +1673,24 @@ void BakeLightProbesOnlyWithConfirm()
             }
         }
 
+        void HandleGODropToList(Rect r, List<GameObject> list)
+        {
+            var e = Event.current;
+            if (!r.Contains(e.mousePosition)) return;
+            if (e.type == EventType.DragUpdated || e.type == EventType.DragPerform)
+            {
+                DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
+                if (e.type == EventType.DragPerform)
+                {
+                    DragAndDrop.AcceptDrag();
+                    foreach (var o in DragAndDrop.objectReferences)
+                        if (o is GameObject go && !list.Contains(go))
+                            list.Add(go);
+                    e.Use();
+                }
+            }
+        }
+
         // ============================================================
         // 🆕 让用户选择保存目录（统一工具方法）
         // ============================================================
@@ -1860,7 +1978,11 @@ void BakeLightProbesOnlyWithConfirm()
                 probe.mode = ReflectionProbeMode.Baked;
             }
 
-            bool bakeSuccess = Lightmapping.BakeReflectionProbe(probe, filename);
+            bool bakeSuccess;
+            using (ReflectionProbeStaticScope.Create(node.reflectionProbeBakeTargets))
+            {
+                bakeSuccess = Lightmapping.BakeReflectionProbe(probe, filename);
+            }
 
             // Custom 模式：切回 Custom
             if (wasCustom)
@@ -1985,7 +2107,12 @@ void BakeLightProbesOnlyWithConfirm()
                 if (wasCustom)
                     probe.mode = ReflectionProbeMode.Baked;
 
-                if (Lightmapping.BakeReflectionProbe(probe, filename))
+                bool nodeBakeOk;
+                using (ReflectionProbeStaticScope.Create(node.reflectionProbeBakeTargets))
+                {
+                    nodeBakeOk = Lightmapping.BakeReflectionProbe(probe, filename);
+                }
+                if (nodeBakeOk)
                 {
                     // 最终都保存为 Custom 模式
                     probe.mode = ReflectionProbeMode.Custom;

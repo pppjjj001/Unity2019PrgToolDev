@@ -7,7 +7,7 @@ using UnityEngine.Rendering;
 
 namespace BYTools.EnvTimeline
 {
-    [CustomEditor(typeof(EnvironmentTimelineController))]
+    [CustomEditor(typeof(EnvironmentTimelineProController))]
     public class EnvironmentTimelineControllerEditor : Editor
     {
         // 折叠状态
@@ -47,7 +47,7 @@ namespace BYTools.EnvTimeline
 
         public override void OnInspectorGUI()
         {
-            var ctrl = (EnvironmentTimelineController)target;
+            var ctrl = (EnvironmentTimelineProController)target;
 
             DrawTimeSection(ctrl);
             DrawWriteSection(ctrl);
@@ -61,7 +61,7 @@ namespace BYTools.EnvTimeline
         // ============================================================
         // 1. 时间
         // ============================================================
-        void DrawTimeSection(EnvironmentTimelineController ctrl)
+        void DrawTimeSection(EnvironmentTimelineProController ctrl)
         {
             foldTime = DrawFoldHeader(foldTime, "⏱ 时间设置", CLR_HEADER_TIME);
             if (!foldTime) return;
@@ -85,7 +85,7 @@ namespace BYTools.EnvTimeline
         // ============================================================
         // 2. 写入选项
         // ============================================================
-        void DrawWriteSection(EnvironmentTimelineController ctrl)
+        void DrawWriteSection(EnvironmentTimelineProController ctrl)
         {
             foldWrite = DrawFoldHeader(foldWrite, "✍ 写入选项", CLR_HEADER_LIGHT);
             if (!foldWrite) return;
@@ -101,7 +101,7 @@ namespace BYTools.EnvTimeline
         // ============================================================
         // 3. ReflectionProbe 控制
         // ============================================================
-        void DrawReflectionProbeSection(EnvironmentTimelineController ctrl)
+        void DrawReflectionProbeSection(EnvironmentTimelineProController ctrl)
         {
             foldReflProbe = DrawFoldHeader(foldReflProbe, "🔮 ReflectionProbe 控制", CLR_HEADER_PROBE);
             if (!foldReflProbe) return;
@@ -113,7 +113,7 @@ namespace BYTools.EnvTimeline
         // ============================================================
         // 4. Light Probe 控制（全局混合）
         // ============================================================
-        void DrawLightProbeSection(EnvironmentTimelineController ctrl)
+        void DrawLightProbeSection(EnvironmentTimelineProController ctrl)
         {
             foldLightProbe = DrawFoldHeader(foldLightProbe, "💡 Light Probe 全局混合", CLR_HEADER_PROBE);
             if (!foldLightProbe) return;
@@ -135,7 +135,7 @@ namespace BYTools.EnvTimeline
         // ============================================================
         // 5. ★ LightProbe 采样设置（自动优先使用 LightProbe，退化到 CustomSH）
         // ============================================================
-        void DrawCustomSamplingSection(EnvironmentTimelineController ctrl)
+        void DrawCustomSamplingSection(EnvironmentTimelineProController ctrl)
         {
             foldCustomSampling = DrawFoldHeader(foldCustomSampling,
                 "🎯 LightProbe 采样设置（自动：LightProbe 优先 → CustomSH 退化）", CLR_HEADER_CUSTOM);
@@ -186,7 +186,7 @@ namespace BYTools.EnvTimeline
         // ============================================================
         // 6. ★ 采样调试面板
         // ============================================================
-        void DrawDebugSection(EnvironmentTimelineController ctrl)
+        void DrawDebugSection(EnvironmentTimelineProController ctrl)
         {
             foldDebug = DrawFoldHeader(foldDebug, "🔬 采样调试", CLR_HEADER_DEBUG);
             if (!foldDebug) return;
@@ -418,7 +418,7 @@ namespace BYTools.EnvTimeline
         // ============================================================
         // 7. Timeline 快捷跳转
         // ============================================================
-        void DrawTimelineJumpSection(EnvironmentTimelineController ctrl)
+        void DrawTimelineJumpSection(EnvironmentTimelineProController ctrl)
         {
             foldTimelineJump = DrawFoldHeader(foldTimelineJump, "🎬 Timeline 集成 & 快捷跳转", CLR_HEADER_LIGHT);
             if (!foldTimelineJump) return;

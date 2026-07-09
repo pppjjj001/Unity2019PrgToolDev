@@ -2,11 +2,10 @@
 using UnityEngine;
 using UnityEngine.Playables;
 
-namespace BYTools.EnvTimelineSimple
+namespace Hotfix.Core.EnvTimelineSimple
 {
     public class EnvironmentTimelinePlayableBehaviour : PlayableBehaviour
     {
-        public EnvironmentTimelineData timelineAsset;
         public TimeRemapMode remapMode;
         public float startTime;
         public float endTime;
@@ -25,9 +24,9 @@ namespace BYTools.EnvTimelineSimple
 
         public override void ProcessFrame(Playable playable, UnityEngine.Playables.FrameData info, object playerData)
         {
-            if (timelineAsset == null || !autoControl) return;
+            if (!autoControl) return;
 
-            // 获取或查找 Controller
+            // 通过 Track Binding 获取 Controller（Controller 上 RequireComponent 了 EnvironmentTimelineData）
             if (_controller == null)
             {
                 _controller = playerData as EnvironmentTimelineController;
@@ -35,13 +34,16 @@ namespace BYTools.EnvTimelineSimple
                     _controller = Object.FindObjectOfType<EnvironmentTimelineController>();
             }
 
-            if (_controller == null || _controller.timelineData != timelineAsset)
+            if (_controller == null || _controller.timelineData == null)
                 return;
+
+            // endTime <= 0 时使用 timelineData.totalDuration 作为默认值
+            float actualEndTime = endTime > 0 ? endTime : _controller.timelineData.totalDuration;
 
             // 计算映射后的环境时间
             float clipTime = (float)playable.GetTime();
             float clipDuration = (float)playable.GetDuration();
-            float envTime = RemapTime(clipTime, clipDuration);
+            float envTime = RemapTime(clipTime, clipDuration, actualEndTime);
 
             // 应用到 Controller
             if (Mathf.Abs(envTime - _lastTime) > 0.001f)
@@ -66,14 +68,14 @@ namespace BYTools.EnvTimelineSimple
             }
         }
 
-        private float RemapTime(float clipTime, float clipDuration)
+        private float RemapTime(float clipTime, float clipDuration, float actualEndTime)
         {
             switch (remapMode)
             {
                 case TimeRemapMode.PercentageMap:
-                    // Timeline 的 0-100% 映射到 startTime-endTime
+                    // Timeline 的 0-100% 映射到 startTime-actualEndTime
                     float percent = clipDuration > 0 ? Mathf.Clamp01(clipTime / clipDuration) : 0f;
-                    return Mathf.Lerp(startTime, endTime, percent);
+                    return Mathf.Lerp(startTime, actualEndTime, percent);
 
                 case TimeRemapMode.DirectMap:
                     // 直接使用 Timeline 时间
@@ -81,7 +83,7 @@ namespace BYTools.EnvTimelineSimple
 
                 case TimeRemapMode.ScaledMap:
                     // 缩放映射
-                    float scale = clipDuration > 0 ? (endTime - startTime) / clipDuration : 1f;
+                    float scale = clipDuration > 0 ? (actualEndTime - startTime) / clipDuration : 1f;
                     return startTime + clipTime * scale;
 
                 default:

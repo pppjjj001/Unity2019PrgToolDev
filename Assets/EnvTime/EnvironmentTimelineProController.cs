@@ -7,8 +7,8 @@ namespace BYTools.EnvTimeline
 {
     [ExecuteAlways]
     [DisallowMultipleComponent]
-    [RequireComponent(typeof(EnvironmentTimelineData))]
-    public class EnvironmentTimelineController : MonoBehaviour
+    [RequireComponent(typeof(EnvironmentTimelineProData))]
+    public class EnvironmentTimelineProController : MonoBehaviour
     {
         [Header("时间")]
         public float currentTime = 12f;
@@ -50,13 +50,13 @@ namespace BYTools.EnvTimeline
         [SerializeField]
         public Transform prefabRoot;
 
-        private EnvironmentTimelineData _timelineData;
-        public EnvironmentTimelineData timelineData
+        private EnvironmentTimelineProData _timelineData;
+        public EnvironmentTimelineProData timelineData
         {
             get
             {
                 if (_timelineData == null)
-                    _timelineData = GetComponent<EnvironmentTimelineData>();
+                    _timelineData = GetComponent<EnvironmentTimelineProData>();
                 return _timelineData;
             }
         }

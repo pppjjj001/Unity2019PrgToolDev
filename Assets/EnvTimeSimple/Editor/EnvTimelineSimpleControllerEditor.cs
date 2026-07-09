@@ -2,11 +2,12 @@
 #if UNITY_EDITOR
 using UnityEditor;
 using UnityEngine;
+using Hotfix.Core.EnvTimelineSimple;
 
 namespace BYTools.EnvTimelineSimple
 {
     [CustomEditor(typeof(EnvironmentTimelineController))]
-    public class EnvironmentTimelineControllerEditor : Editor
+    public class EnvTimelineSimpleControllerEditor : Editor
     {
         public override void OnInspectorGUI()
         {

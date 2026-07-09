@@ -6,13 +6,13 @@ using UnityEngine.Timeline;
 namespace BYTools.EnvTimeline
 {
     [TrackColor(0.3f, 0.7f, 0.9f)]
-    [TrackClipType(typeof(EnvironmentTimelinePlayableAsset))]
-    [TrackBindingType(typeof(EnvironmentTimelineController))]
-    public class EnvironmentTimelineTrack : TrackAsset
+    [TrackClipType(typeof(EnvironmentTimelineProPlayableAsset))]
+    [TrackBindingType(typeof(EnvironmentTimelineProController))]
+    public class EnvironmentTimelineProTrack : TrackAsset
     {
         public override Playable CreateTrackMixer(PlayableGraph graph, GameObject go, int inputCount)
         {
-            var mixer = ScriptPlayable<EnvironmentTimelineTrackMixer>.Create(graph, inputCount);
+            var mixer = ScriptPlayable<EnvironmentTimelineProTrackMixer>.Create(graph, inputCount);
             return mixer;
         }
     }

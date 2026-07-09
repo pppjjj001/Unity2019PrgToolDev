@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-namespace BYTools.EnvTimelineSimple
+namespace Hotfix.Core.EnvTimelineSimple
 {
     [DisallowMultipleComponent]
     public class EnvironmentTimelineData : MonoBehaviour
@@ -150,6 +150,10 @@ namespace BYTools.EnvTimelineSimple
         [Header("影响目标")]
         public List<GameObject> affectedTargets = new List<GameObject>();
         public bool includeChildren = true;
+
+        [Header("ReflectionProbe 烘焙参与模型")]
+        [Tooltip("烘焙此节点时，将这些 GameObject 及其递归所有子物体临时勾选 ReflectionProbeStatic 以参与烘焙，烘焙结束后自动还原。")]
+        public List<GameObject> reflectionProbeBakeTargets = new List<GameObject>();
 
         [Header("烘焙参数")]
         public int sampleResolution = 64;
