@@ -269,12 +269,42 @@ namespace BYTools.EnvTimelineSimple
                     }
                     else
                     {
-                        // 不同尺寸需要 Blit 缩放，先用 Blit 写入 RT
+                        // 不同尺寸：创建源尺寸 Cube RT，复制源数据，逐面读取后 CPU 缩放
+                        // （原代码只 GL.Clear(black) 未拷贝源数据 → 全黑 → SH 全零）
+                        RenderTexture srcRT = new RenderTexture(srcSize, srcSize, 0, RenderTextureFormat.ARGBFloat);
+                        srcRT.dimension = TextureDimension.Cube;
+                        srcRT.useMipMap = false;
+                        srcRT.Create();
+
+                        for (int face = 0; face < 6; face++)
+                            Graphics.CopyTexture(source, face, 0, srcRT, face, 0);
+
+                        float scale = (float)srcSize / size;
                         for (int face = 0; face < 6; face++)
                         {
-                            Graphics.SetRenderTarget(rt, 0, (CubemapFace)face);
-                            GL.Clear(true, true, Color.black);
+                            Graphics.SetRenderTarget(srcRT, 0, (CubemapFace)face);
+                            Texture2D srcTex = new Texture2D(srcSize, srcSize, TextureFormat.RGBAFloat, false);
+                            srcTex.ReadPixels(new Rect(0, 0, srcSize, srcSize), 0, 0);
+                            srcTex.Apply();
+                            Color[] srcPx = srcTex.GetPixels();
+                            UnityEngine.Object.DestroyImmediate(srcTex);
+
+                            Color[] dstPx = new Color[size * size];
+                            for (int y = 0; y < size; y++)
+                                for (int x = 0; x < size; x++)
+                                {
+                                    int sx = Mathf.Clamp(Mathf.FloorToInt(x * scale), 0, srcSize - 1);
+                                    int sy = Mathf.Clamp(Mathf.FloorToInt(y * scale), 0, srcSize - 1);
+                                    dstPx[y * size + x] = srcPx[sy * srcSize + sx];
+                                }
+                            result.SetPixels(dstPx, (CubemapFace)face);
                         }
+                        result.Apply();
+
+                        UnityEngine.Object.DestroyImmediate(srcRT);
+                        RenderTexture.active = null;
+                        UnityEngine.Object.DestroyImmediate(rt);
+                        return result;
                     }
                 }
                 catch
@@ -1232,6 +1262,19 @@ namespace BYTools.EnvTimelineSimple
                 foreach (var go in Selection.gameObjects)
                     if (go && !node.reflectionProbeBakeTargets.Contains(go)) node.reflectionProbeBakeTargets.Add(go);
             }
+            // 从上一节点导入烘焙参与模型
+            GUI.backgroundColor = CLR_WARN;
+            GUI.enabled = selectedNodeIndex > 0;
+            if (GUILayout.Button("从上一节点导入", GUILayout.Width(110)))
+            {
+                var prevNode = data.nodes[selectedNodeIndex - 1];
+                Undo.RecordObject(data, "Import Bake Targets from Prev");
+                node.reflectionProbeBakeTargets.Clear();
+                foreach (var go in prevNode.reflectionProbeBakeTargets)
+                    if (go) node.reflectionProbeBakeTargets.Add(go);
+                EditorUtility.SetDirty(data);
+            }
+            GUI.enabled = true;
             GUI.backgroundColor = CLR_ERROR;
             if (GUILayout.Button("清空", GUILayout.Width(50)))
             {
@@ -1276,6 +1319,19 @@ namespace BYTools.EnvTimelineSimple
                 foreach (var go in Selection.gameObjects)
                     if (go && !node.affectedTargets.Contains(go)) node.affectedTargets.Add(go);
             }
+            // 从上一节点导入影响的模型
+            GUI.backgroundColor = CLR_WARN;
+            GUI.enabled = selectedNodeIndex > 0;
+            if (GUILayout.Button("从上一节点导入", GUILayout.Width(110)))
+            {
+                var prevNode = data.nodes[selectedNodeIndex - 1];
+                Undo.RecordObject(data, "Import Targets from Prev");
+                node.affectedTargets.Clear();
+                foreach (var go in prevNode.affectedTargets)
+                    if (go) node.affectedTargets.Add(go);
+                EditorUtility.SetDirty(data);
+            }
+            GUI.enabled = true;
             GUI.backgroundColor = CLR_ERROR;
             if (GUILayout.Button("清空", GUILayout.Width(50)))
             {
@@ -1606,13 +1662,58 @@ namespace BYTools.EnvTimelineSimple
                 if (cube == null) return;
             }
 
+            // ★ 确保 Cubemap 可读（临时修改导入设置，SH 投影后恢复）
+            // 烘焙后的 .exr 默认 isReadable=false，会导致 GetPixels 抛异常，
+            // 回退到 CopyViaRenderTexture 后因不同尺寸只 Clear 不拷贝 → 全黑 → SH 全零
+            string cubeAssetPath = AssetDatabase.GetAssetPath(cube);
+            bool madeReadable = false;
+            if (!string.IsNullOrEmpty(cubeAssetPath))
+            {
+                var cubeImporter = AssetImporter.GetAtPath(cubeAssetPath) as TextureImporter;
+                if (cubeImporter != null && !cubeImporter.isReadable)
+                {
+                    cubeImporter.isReadable = true;
+                    cubeImporter.SaveAndReimport();
+                    AssetDatabase.Refresh();
+                    cube = AssetDatabase.LoadAssetAtPath<Cubemap>(cubeAssetPath);
+                    if (cube == null)
+                    {
+                        Debug.LogError("[EnvTimeline] 无法重新加载可读 Cubemap: " + cubeAssetPath);
+                        return;
+                    }
+                    madeReadable = true;
+                }
+            }
+
             float clamp = node.useHDRClamp ? node.hdrClampMax : 0f;
             float[,] coeffs = CubemapSHProjector.ProjectCubemapToSH(
                 cube, node.sampleResolution, node.rotationY, clamp);
+
+            // 恢复原始不可读状态（节省运行时内存）
+            if (madeReadable)
+            {
+                var restoreImporter = AssetImporter.GetAtPath(cubeAssetPath) as TextureImporter;
+                if (restoreImporter != null)
+                {
+                    restoreImporter.isReadable = false;
+                    restoreImporter.SaveAndReimport();
+                }
+            }
+
             if (coeffs == null)
             {
                 Debug.LogError("[EnvTimeline] SH 投影失败：" + cube.name);
                 return;
+            }
+
+            // 诊断：检查 SH 系数是否全零
+            bool allZero = true;
+            for (int i = 0; i < 9 && allZero; i++)
+                for (int c = 0; c < 3 && allZero; c++)
+                    if (Mathf.Abs(coeffs[i, c]) > 1e-8f) allZero = false;
+            if (allZero)
+            {
+                Debug.LogWarning($"[EnvTimeline] 节点 [{node.nodeName}] SH 烘焙结果全零！Cubemap 可能为纯黑或像素读取失败: {cube.name}");
             }
 
             if (node.exposure != 1f)
@@ -2070,7 +2171,8 @@ namespace BYTools.EnvTimelineSimple
             byte[] exrBytes;
             try
             {
-                exrBytes = stripTex.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat);
+                //exrBytes = stripTex.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat);
+                exrBytes = stripTex.EncodeToEXR();
             }
             catch (System.Exception e)
             {

@@ -1338,6 +1338,19 @@ namespace BYTools.EnvTimeline
                 foreach (var go in Selection.gameObjects)
                     if (go && !node.reflectionProbeBakeTargets.Contains(go)) node.reflectionProbeBakeTargets.Add(go);
             }
+            // 从上一节点导入烘焙参与模型
+            GUI.backgroundColor = CLR_WARN;
+            GUI.enabled = selectedNodeIndex > 0;
+            if (GUILayout.Button("从上一节点导入", GUILayout.Width(110)))
+            {
+                var prevNode = data.nodes[selectedNodeIndex - 1];
+                Undo.RecordObject(data, "Import Bake Targets from Prev");
+                node.reflectionProbeBakeTargets.Clear();
+                foreach (var go in prevNode.reflectionProbeBakeTargets)
+                    if (go) node.reflectionProbeBakeTargets.Add(go);
+                EditorUtility.SetDirty(data);
+            }
+            GUI.enabled = true;
             GUI.backgroundColor = CLR_ERROR;
             if (GUILayout.Button("清空", GUILayout.Width(50)))
             {
@@ -1382,6 +1395,19 @@ namespace BYTools.EnvTimeline
                 foreach (var go in Selection.gameObjects)
                     if (go && !node.affectedTargets.Contains(go)) node.affectedTargets.Add(go);
             }
+            // 从上一节点导入影响的模型
+            GUI.backgroundColor = CLR_WARN;
+            GUI.enabled = selectedNodeIndex > 0;
+            if (GUILayout.Button("从上一节点导入", GUILayout.Width(110)))
+            {
+                var prevNode = data.nodes[selectedNodeIndex - 1];
+                Undo.RecordObject(data, "Import Targets from Prev");
+                node.affectedTargets.Clear();
+                foreach (var go in prevNode.affectedTargets)
+                    if (go) node.affectedTargets.Add(go);
+                EditorUtility.SetDirty(data);
+            }
+            GUI.enabled = true;
             GUI.backgroundColor = CLR_ERROR;
             if (GUILayout.Button("清空", GUILayout.Width(50)))
             {
