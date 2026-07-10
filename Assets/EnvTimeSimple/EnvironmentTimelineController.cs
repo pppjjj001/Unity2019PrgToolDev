@@ -66,7 +66,7 @@ namespace Hotfix.Core.EnvTimelineSimple
             if (autoPlay && Application.isPlaying)
             {
                 currentTime += Time.deltaTime * timeSpeed;
-                if (timelineData.loop)
+                if (!timelineData.holdAtEnd && timelineData.loop)
                     currentTime = Mathf.Repeat(currentTime, timelineData.totalDuration);
                 else
                     currentTime = Mathf.Clamp(currentTime, 0f, timelineData.totalDuration);

@@ -424,7 +424,7 @@ namespace BYTools.EnvTimeline
         const float PREVIEW_HANDLE_HEIGHT = 50f;
 
         [SerializeField] private int defaultCubemapSize = 128;
-        [SerializeField] private string cubemapPrefix = "bake_";
+        [SerializeField] private string cubemapPrefix = "Baked";
 
         // 🆕 动态探针布置
         bool foldProbePlacement = false;
@@ -566,11 +566,13 @@ namespace BYTools.EnvTimeline
                 EditorGUI.BeginChangeCheck();
                 float td = EditorGUILayout.FloatField("时间轴总长", data.totalDuration);
                 bool lp = EditorGUILayout.Toggle("循环", data.loop);
+                bool he = EditorGUILayout.Toggle(new GUIContent("末尾保持最后节点", "勾选：到达时间轴末尾后保持最后一个节点的环境（默认）。\n取消：循环回到第一个节点继续模拟。"), data.holdAtEnd);
                 if (EditorGUI.EndChangeCheck())
                 {
                     Undo.RecordObject(data, "Edit Timeline");
                     data.totalDuration = Mathf.Max(0.01f, td);
                     data.loop = lp;
+                    data.holdAtEnd = he;
                     EditorUtility.SetDirty(data);
                 }
             }
@@ -626,6 +628,28 @@ namespace BYTools.EnvTimeline
                 }
             }
             return set;
+        }
+
+        /// <summary>
+        /// 判断 Probe 是否自带 Cubemap（Custom 模式且 cubemap 不为 null 且 cubemap 名不含 Baked 前缀）。
+        /// 自带 Cubemap 的 Probe 不支持 Bake 环境球。
+        /// 工具烘焙的 cubemap（名含 Baked 前缀）允许重新烘焙。
+        /// </summary>
+        bool IsProbeSelfContained(ReflectionProbe probe)
+        {
+            if (probe == null) return false;
+
+            // 仅 Custom 模式 + cubemap 不为 null 时检查
+            if (probe.mode != ReflectionProbeMode.Custom || probe.customBakedTexture == null)
+                return false;
+
+            // cubemap 名含 Baked 前缀 → 工具烘焙的，允许重新烘焙
+            if (!string.IsNullOrEmpty(cubemapPrefix)
+                && probe.customBakedTexture.name.StartsWith(cubemapPrefix, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            // Custom 模式 + cubemap 不为 null + 名不含 Baked 前缀 → 用户自带的，不支持 Bake
+            return true;
         }
 
         bool ValidateNoDuplicateProbes()
@@ -1171,6 +1195,23 @@ namespace BYTools.EnvTimeline
                     else
                         EditorGUILayout.HelpBox("此 Probe 尚未烘焙！", MessageType.Warning);
                 }
+
+                // 判断是否自带 cubemap
+                bool selfContained = IsProbeSelfContained(node.mainProbe);
+                if (selfContained)
+                {
+                    var scStyle = new GUIStyle(EditorStyles.label)
+                    {
+                        normal = { textColor = CLR_INFO },
+                        fontStyle = FontStyle.Bold
+                    };
+                    EditorGUILayout.LabelField("  自带Cubemap", "✓ 不支持Bake", scStyle);
+            EditorGUILayout.HelpBox(
+                "此 Probe 自带 Cubemap（Custom 模式且 cubemap 名不含 Baked 前缀），\n"
+                + "不支持 Bake 环境球。如需重新烘焙，请先清除 Custom Cubemap。\n"
+                + "（cubemap 名含 Baked 前缀的 Probe 允许重新烘焙）",
+                MessageType.Info);
+                }
                 EditorGUILayout.EndVertical();
             }
             else
@@ -1217,11 +1258,16 @@ namespace BYTools.EnvTimeline
             {
                 BakeNodeSH(node);
             }
-            GUI.backgroundColor = CLR_WARN;
-            if (GUILayout.Button("🔥 烘焙 Probe", GUILayout.Height(28)))
+
+            // 自带 cubemap 的 Probe 不支持 Bake
+            bool probeSelfContained = IsProbeSelfContained(node.mainProbe);
+            GUI.backgroundColor = probeSelfContained ? CLR_MUTED : CLR_WARN;
+            GUI.enabled = !probeSelfContained;
+            if (GUILayout.Button(probeSelfContained ? "🔥 烘焙 Probe (不支持)" : "🔥 烘焙 Probe", GUILayout.Height(28)))
             {
                 BakeReflectionProbe(node);
             }
+            GUI.enabled = true;
             GUI.backgroundColor = Color.white;
             EditorGUILayout.EndHorizontal();
 
@@ -1934,6 +1980,17 @@ void BakeLightProbesOnlyWithConfirm()
                 return;
             }
 
+            // 自带 cubemap 的 Probe 不支持 Bake
+            if (IsProbeSelfContained(node.mainProbe))
+            {
+                EditorUtility.DisplayDialog("不支持 Bake",
+                    $"Probe '{node.mainProbe.name}' 自带 Cubemap（Custom 模式且 cubemap 名不含 Baked 前缀）。\n"
+                    + "不支持 Bake 环境球。如需重新烘焙，请先清除 Custom Cubemap。\n"
+                    + "（cubemap 名含 Baked 前缀的 Probe 允许重新烘焙）",
+                    "确定");
+                return;
+            }
+
             var probe = node.mainProbe;
             var originalMode = probe.mode;
 
@@ -2028,18 +2085,35 @@ void BakeLightProbesOnlyWithConfirm()
 
             if (!ValidateNoDuplicateProbes()) return;
 
-            // 收集所有需要烘焙的节点（所有模式都烘焙）
+            // 收集所有需要烘焙的节点（自带 cubemap 的 Probe 跳过烘焙）
             List<EnvTimeNode> needsBake = new List<EnvTimeNode>();
+            List<EnvTimeNode> selfContainedNodes = new List<EnvTimeNode>();
             foreach (var node in data.nodes)
             {
                 if (node.mainProbe != null)
-                    needsBake.Add(node);
+                {
+                    if (IsProbeSelfContained(node.mainProbe))
+                        selfContainedNodes.Add(node);
+                    else
+                        needsBake.Add(node);
+                }
+            }
+
+            if (needsBake.Count == 0 && selfContainedNodes.Count == 0)
+            {
+                EditorUtility.DisplayDialog("提示", "没有可烘焙的节点（未指定主 Probe）", "确定");
+                return;
             }
 
             if (needsBake.Count == 0)
             {
-                EditorUtility.DisplayDialog("提示", "没有可烘焙的节点（未指定主 Probe）", "确定");
-                return;
+                EditorUtility.DisplayDialog("提示",
+                    $"所有 {selfContainedNodes.Count} 个节点的 Probe 均自带 Cubemap，无需烘焙。\n"
+                    + "将直接进行 SH 投影。", "确定");
+            }
+            else if (selfContainedNodes.Count > 0)
+            {
+                Debug.Log($"[EnvTimeline] {selfContainedNodes.Count} 个节点的 Probe 自带 Cubemap，跳过 Probe 烘焙，仅烘焙 SH");
             }
 
             // 检查是否有需要用户选择目录的节点
@@ -2162,8 +2236,15 @@ void BakeLightProbesOnlyWithConfirm()
             EditorUtility.ClearProgressBar();
 
             string summary = $"✓ SH 成功 {ok} 个，✗ SH 失败 {fail} 个";
-            summary += $"\n已烘焙 {bakeOk} 个 Probe (失败 {bakeFail})";
-            summary += $"\n所有 Probe 已切换为 Custom 模式";
+            if (needsBake.Count > 0)
+            {
+                summary += $"\n已烘焙 {bakeOk} 个 Probe (失败 {bakeFail})";
+                summary += $"\n所有 Probe 已切换为 Custom 模式";
+            }
+            if (selfContainedNodes.Count > 0)
+            {
+                summary += $"\n跳过 {selfContainedNodes.Count} 个自带 Cubemap 的 Probe（仅烘焙 SH）";
+            }
 
             EditorUtility.DisplayDialog("批量烘焙完成", summary, "确定");
         }

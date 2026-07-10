@@ -12,7 +12,12 @@ namespace Hotfix.Core.EnvTimelineSimple
         [Tooltip("时间轴总长度（如 24 表示 24 小时）")]
         public float totalDuration = 24f;
         public bool loop = true;
-        
+
+        [Tooltip("到达时间轴末尾时是否保持最后一个节点的环境。\n"
+                 + "✅ 勾选：到达末尾后保持最后一个节点的环境（默认）。\n"
+                 + "❌ 取消：循环回到第一个节点继续模拟。")]
+        public bool holdAtEnd = true;
+
         [SerializeField]
         public List<EnvTimeNode> nodes = new List<EnvTimeNode>();
 
@@ -27,8 +32,10 @@ namespace Hotfix.Core.EnvTimelineSimple
             if (nodes == null || nodes.Count == 0) return false;
             if (nodes.Count == 1) { from = to = nodes[0]; return true; }
 
-            currentTime = loop ? Mathf.Repeat(currentTime, totalDuration)
-                               : Mathf.Clamp(currentTime, 0f, totalDuration);
+            // holdAtEnd 优先控制尾部行为：true=保持最后节点，false=循环回第一个
+            bool shouldLoop = loop && !holdAtEnd;
+            currentTime = shouldLoop ? Mathf.Repeat(currentTime, totalDuration)
+                                     : Mathf.Clamp(currentTime, 0f, totalDuration);
 
             for (int i = 0; i < nodes.Count - 1; i++)
             {
@@ -41,7 +48,7 @@ namespace Hotfix.Core.EnvTimelineSimple
                 }
             }
 
-            if (loop)
+            if (loop && !holdAtEnd)
             {
                 from = nodes[nodes.Count - 1];
                 to = nodes[0];
@@ -54,6 +61,7 @@ namespace Hotfix.Core.EnvTimelineSimple
                 return true;
             }
 
+            // holdAtEnd=true 或 loop=false：保持最后一个节点
             from = to = nodes[nodes.Count - 1];
             return true;
         }
@@ -161,6 +169,16 @@ namespace Hotfix.Core.EnvTimelineSimple
         public bool useHDRClamp = false;
         public float hdrClampMax = 5f;
         public float exposure = 1f;
+
+        [Header("半球映射")]
+        [Tooltip("启用后，烘焙完 Cubemap 会自动将空半球用实景半球镜像填充。\n" +
+                 "适用于场景只有一半有实景的情况。")]
+        public bool enableHemisphereMirror = false;
+        [Range(0f, 360f)]
+        [Tooltip("与水平轴 Z 的夹角（度），定义实景半球的中心方向。\n" +
+                 "0° = +Z 方向，90° = +X 方向，180° = -Z 方向，270° = -X 方向。\n" +
+                 "镜面为过 Y 轴的垂直平面，法线指向实景半球。")]
+        public float hemisphereAngle = 0f;
 
         [Header("烘焙结果（自动写入）")]
         public SerializedSH customSH = new SerializedSH();

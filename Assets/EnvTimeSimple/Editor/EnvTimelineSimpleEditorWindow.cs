@@ -39,6 +39,16 @@ namespace BYTools.EnvTimelineSimple
             new Vector3( 0, 0, 1), new Vector3( 0, 0,-1),
         };
 
+        /// <summary>
+        /// 根据 Cubemap 面索引和 UV 坐标 [-1,1] 计算方向向量（已归一化）
+        /// </summary>
+        public static Vector3 GetCubemapDirection(int face, float u, float v)
+        {
+            Vector3 dir = FaceNormal[face] + FaceUAxis[face] * u + FaceVAxis[face] * v;
+            dir.Normalize();
+            return dir;
+        }
+
         static Vector3 RotateAroundY(Vector3 dir, float angleDeg)
         {
             float rad = angleDeg * Mathf.Deg2Rad;
@@ -408,7 +418,7 @@ namespace BYTools.EnvTimelineSimple
         const float PREVIEW_HANDLE_HEIGHT = 50f;
 
         [SerializeField] private int defaultCubemapSize = 128;
-        [SerializeField] private string cubemapPrefix = "bake_";
+        [SerializeField] private string cubemapPrefix = "Baked";
 
         static readonly Color CLR_TITLE       = new Color(1f, 0.85f, 0.3f);
         static readonly Color CLR_OK          = new Color(0.4f, 1f, 0.5f);
@@ -541,11 +551,13 @@ namespace BYTools.EnvTimelineSimple
                 EditorGUI.BeginChangeCheck();
                 float td = EditorGUILayout.FloatField("时间轴总长", data.totalDuration);
                 bool lp = EditorGUILayout.Toggle("循环", data.loop);
+                bool he = EditorGUILayout.Toggle(new GUIContent("末尾保持最后节点", "勾选：到达时间轴末尾后保持最后一个节点的环境（默认）。\n取消：循环回到第一个节点继续模拟。"), data.holdAtEnd);
                 if (EditorGUI.EndChangeCheck())
                 {
                     Undo.RecordObject(data, "Edit Timeline");
                     data.totalDuration = Mathf.Max(0.01f, td);
                     data.loop = lp;
+                    data.holdAtEnd = he;
                     EditorUtility.SetDirty(data);
                 }
             }
@@ -601,6 +613,28 @@ namespace BYTools.EnvTimelineSimple
                 }
             }
             return set;
+        }
+
+        /// <summary>
+        /// 判断 Probe 是否自带 Cubemap（Custom 模式且 cubemap 不为 null 且 cubemap 名不含 Baked 前缀）。
+        /// 自带 Cubemap 的 Probe 不支持 Bake 环境球。
+        /// 工具烘焙的 cubemap（名含 Baked 前缀）允许重新烘焙。
+        /// </summary>
+        bool IsProbeSelfContained(ReflectionProbe probe)
+        {
+            if (probe == null) return false;
+
+            // 仅 Custom 模式 + cubemap 不为 null 时检查
+            if (probe.mode != ReflectionProbeMode.Custom || probe.customBakedTexture == null)
+                return false;
+
+            // cubemap 名含 Baked 前缀 → 工具烘焙的，允许重新烘焙
+            if (!string.IsNullOrEmpty(cubemapPrefix)
+                && probe.customBakedTexture.name.StartsWith(cubemapPrefix, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            // Custom 模式 + cubemap 不为 null + 名不含 Baked 前缀 → 用户自带的，不支持 Bake
+            return true;
         }
 
         bool ValidateNoDuplicateProbes()
@@ -1065,6 +1099,23 @@ namespace BYTools.EnvTimelineSimple
                     else
                         EditorGUILayout.HelpBox("此 Probe 尚未烘焙！", MessageType.Warning);
                 }
+
+                // 判断是否自带 cubemap
+                bool selfContained = IsProbeSelfContained(node.mainProbe);
+                if (selfContained)
+                {
+                    var scStyle = new GUIStyle(EditorStyles.label)
+                    {
+                        normal = { textColor = CLR_INFO },
+                        fontStyle = FontStyle.Bold
+                    };
+                    EditorGUILayout.LabelField("  自带Cubemap", "✓ 不支持Bake", scStyle);
+            EditorGUILayout.HelpBox(
+                "此 Probe 自带 Cubemap（Custom 模式且 cubemap 名不含 Baked 前缀），\n"
+                + "不支持 Bake 环境球。如需重新烘焙，请先清除 Custom Cubemap。\n"
+                + "（cubemap 名含 Baked 前缀的 Probe 允许重新烘焙）",
+                MessageType.Info);
+                }
                 EditorGUILayout.EndVertical();
             }
             else
@@ -1105,19 +1156,60 @@ namespace BYTools.EnvTimelineSimple
                 node.hdrClampMax = EditorGUILayout.Slider("Clamp 上限", node.hdrClampMax, 0.1f, 100f);
             node.exposure = EditorGUILayout.Slider("曝光", node.exposure, 0.01f, 10f);
 
+            EditorGUILayout.Space(4);
+            DrawSectionHeader("半球映射", CLR_INFO, "🌐");
+            node.enableHemisphereMirror = EditorGUILayout.Toggle(
+                new GUIContent("启用半球映射", "烘焙后将空半球用实景半球镜像填充"),
+                node.enableHemisphereMirror);
+            if (node.enableHemisphereMirror)
+            {
+                EditorGUILayout.BeginHorizontal();
+                node.hemisphereAngle = EditorGUILayout.Slider(
+                    new GUIContent("与Z轴夹角", "0°=+Z, 90°=+X, 180°=-Z, 270°=-X"),
+                    node.hemisphereAngle, 0f, 360f);
+                if (GUILayout.Button("0°", GUILayout.Width(30))) node.hemisphereAngle = 0f;
+                if (GUILayout.Button("90°", GUILayout.Width(36))) node.hemisphereAngle = 90f;
+                if (GUILayout.Button("180°", GUILayout.Width(40))) node.hemisphereAngle = 180f;
+                if (GUILayout.Button("270°", GUILayout.Width(40))) node.hemisphereAngle = 270f;
+                EditorGUILayout.EndHorizontal();
+                EditorGUILayout.HelpBox(
+                    "启用后，烘焙 Cubemap 完成时会自动将空半球（与角度相反方向）" +
+                    "用实景半球镜像填充。\n适用于场景只有一半有实景的情况。",
+                    MessageType.Info);
+            }
+
             EditorGUILayout.BeginHorizontal();
             GUI.backgroundColor = CLR_OK;
             if (GUILayout.Button("▶ 烘焙此节点 SH", GUILayout.Height(28)))
             {
                 BakeNodeSH(node);
             }
-            GUI.backgroundColor = CLR_WARN;
-            if (GUILayout.Button("🔥 烘焙 Probe", GUILayout.Height(28)))
+
+            // 自带 cubemap 的 Probe 不支持 Bake
+            bool probeSelfContained = IsProbeSelfContained(node.mainProbe);
+            GUI.backgroundColor = probeSelfContained ? CLR_MUTED : CLR_WARN;
+            GUI.enabled = !probeSelfContained;
+            if (GUILayout.Button(probeSelfContained ? "🔥 烘焙 Probe (不支持)" : "🔥 烘焙 Probe", GUILayout.Height(28)))
             {
                 BakeReflectionProbe(node);
             }
+            GUI.enabled = true;
             GUI.backgroundColor = Color.white;
             EditorGUILayout.EndHorizontal();
+
+            // 半球映射独立处理按钮（已有烘焙结果时可单独处理）
+            if (node.enableHemisphereMirror && node.mainProbe != null)
+            {
+                Cubemap existCube = node.GetMainCubemap();
+                GUI.backgroundColor = (existCube != null) ? CLR_INFO : CLR_MUTED;
+                GUI.enabled = (existCube != null);
+                if (GUILayout.Button("🔄 单独处理环境球（半球映射）", GUILayout.Height(24)))
+                {
+                    ProcessNodeHemisphereMirror(node);
+                }
+                GUI.enabled = true;
+                GUI.backgroundColor = Color.white;
+            }
 
             EditorGUILayout.Space(6);
             DrawSectionHeader($"ReflectionProbe 烘焙参与模型 ({node.reflectionProbeBakeTargets.Count})", CLR_INFO, "🔄");
@@ -1560,6 +1652,17 @@ namespace BYTools.EnvTimelineSimple
                 return;
             }
 
+            // 自带 cubemap 的 Probe 不支持 Bake
+            if (IsProbeSelfContained(node.mainProbe))
+            {
+                EditorUtility.DisplayDialog("不支持 Bake",
+                    $"Probe '{node.mainProbe.name}' 自带 Cubemap（Custom 模式且 cubemap 名不含 Baked 前缀）。\n"
+                    + "不支持 Bake 环境球。如需重新烘焙，请先清除 Custom Cubemap。\n"
+                    + "（cubemap 名含 Baked 前缀的 Probe 允许重新烘焙）",
+                    "确定");
+                return;
+            }
+
             var probe = node.mainProbe;
             var originalMode = probe.mode;
 
@@ -1628,6 +1731,22 @@ namespace BYTools.EnvTimelineSimple
                     EditorUtility.SetDirty(probe);
                 }
 
+                // 半球映射后处理
+                if (node.enableHemisphereMirror)
+                {
+                    Cubemap processedCube = ProcessCubemapHemisphereMirror(filename, node.hemisphereAngle);
+                    if (processedCube != null)
+                    {
+                        probe.customBakedTexture = processedCube;
+                        EditorUtility.SetDirty(probe);
+                        Debug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {filename} (角度: {node.hemisphereAngle}°)");
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[EnvTimeline] 半球映射处理失败: {filename}");
+                    }
+                }
+
                 Debug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
                 EditorUtility.DisplayDialog("✓ Probe 烘焙完成",
                     $"已烘焙 '{probe.name}'\n保存到: {filename}\n已切换为 Custom 模式", "确定");
@@ -1654,18 +1773,35 @@ namespace BYTools.EnvTimelineSimple
 
             if (!ValidateNoDuplicateProbes()) return;
 
-            // 收集所有需要烘焙的节点（所有模式都烘焙）
+            // 收集所有需要烘焙的节点（自带 cubemap 的 Probe 跳过烘焙）
             List<EnvTimeNode> needsBake = new List<EnvTimeNode>();
+            List<EnvTimeNode> selfContainedNodes = new List<EnvTimeNode>();
             foreach (var node in data.nodes)
             {
                 if (node.mainProbe != null)
-                    needsBake.Add(node);
+                {
+                    if (IsProbeSelfContained(node.mainProbe))
+                        selfContainedNodes.Add(node);
+                    else
+                        needsBake.Add(node);
+                }
+            }
+
+            if (needsBake.Count == 0 && selfContainedNodes.Count == 0)
+            {
+                EditorUtility.DisplayDialog("提示", "没有可烘焙的节点（未指定主 Probe）", "确定");
+                return;
             }
 
             if (needsBake.Count == 0)
             {
-                EditorUtility.DisplayDialog("提示", "没有可烘焙的节点（未指定主 Probe）", "确定");
-                return;
+                EditorUtility.DisplayDialog("提示",
+                    $"所有 {selfContainedNodes.Count} 个节点的 Probe 均自带 Cubemap，无需烘焙。\n"
+                    + "将直接进行 SH 投影。", "确定");
+            }
+            else if (selfContainedNodes.Count > 0)
+            {
+                Debug.Log($"[EnvTimeline] {selfContainedNodes.Count} 个节点的 Probe 自带 Cubemap，跳过 Probe 烘焙，仅烘焙 SH");
             }
 
             // 检查是否有需要用户选择目录的节点
@@ -1750,6 +1886,17 @@ namespace BYTools.EnvTimelineSimple
                         probe.customBakedTexture = bakedTex;
                         EditorUtility.SetDirty(probe);
                     }
+                    // 半球映射后处理
+                    if (node.enableHemisphereMirror)
+                    {
+                        Cubemap processedCube = ProcessCubemapHemisphereMirror(filename, node.hemisphereAngle);
+                        if (processedCube != null)
+                        {
+                            probe.customBakedTexture = processedCube;
+                            EditorUtility.SetDirty(probe);
+                            Debug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {filename} (角度: {node.hemisphereAngle}°)");
+                        }
+                    }
                     bakeOk++;
                     Debug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
                 }
@@ -1788,14 +1935,276 @@ namespace BYTools.EnvTimelineSimple
             EditorUtility.ClearProgressBar();
 
             string summary = $"✓ SH 成功 {ok} 个，✗ SH 失败 {fail} 个";
-            summary += $"\n已烘焙 {bakeOk} 个 Probe (失败 {bakeFail})";
-            summary += $"\n所有 Probe 已切换为 Custom 模式";
+            if (needsBake.Count > 0)
+            {
+                summary += $"\n已烘焙 {bakeOk} 个 Probe (失败 {bakeFail})";
+                summary += $"\n所有 Probe 已切换为 Custom 模式";
+            }
+            if (selfContainedNodes.Count > 0)
+            {
+                summary += $"\n跳过 {selfContainedNodes.Count} 个自带 Cubemap 的 Probe（仅烘焙 SH）";
+            }
 
             EditorUtility.DisplayDialog("批量烘焙完成", summary, "确定");
         }
 
         static string FormatV4(Vector4 v) =>
             $"({v.x:F3}, {v.y:F3}, {v.z:F3}, {v.w:F3})";
+
+        // ============================================================
+        // 🌐 半球映射：将空半球用实景半球镜像填充
+        // ============================================================
+
+        /// <summary>
+        /// 对已烘焙的 Cubemap (.exr) 进行半球镜像后处理。
+        /// 将空半球（与 hemisphereAngle 相反方向）的像素用实景半球镜像填充，
+        /// 保存为同格式 EXR，保持原有导入设置。
+        /// </summary>
+        Cubemap ProcessCubemapHemisphereMirror(string exrPath, float hemisphereAngle)
+        {
+            if (string.IsNullOrEmpty(exrPath) || !File.Exists(exrPath))
+            {
+                Debug.LogError($"[EnvTimeline] EXR 文件不存在: {exrPath}");
+                return null;
+            }
+
+            // 1. 读取原始导入设置
+            var importer = AssetImporter.GetAtPath(exrPath) as TextureImporter;
+            bool origReadable = importer?.isReadable ?? false;
+            bool origSRGB = importer?.sRGBTexture ?? true;
+            bool origMipMaps = importer?.mipmapEnabled ?? true;
+            int origConvolution = 0;
+            bool origSeamless = false;
+            if (importer != null)
+            {
+                var so0 = new SerializedObject(importer);
+                var convProp0 = so0.FindProperty("m_ConvolutionType");
+                if (convProp0 != null) origConvolution = convProp0.intValue;
+                var seamProp0 = so0.FindProperty("m_SeamlessCubemap");
+                if (seamProp0 != null) origSeamless = seamProp0.boolValue;
+            }
+
+            // 2. 临时设为可读
+            if (importer != null && !origReadable)
+            {
+                importer.isReadable = true;
+                importer.SaveAndReimport();
+            }
+
+            // 3. 加载并读取像素
+            AssetDatabase.Refresh();
+            Cubemap sourceCube = AssetDatabase.LoadAssetAtPath<Cubemap>(exrPath);
+            if (sourceCube == null)
+            {
+                Debug.LogError($"[EnvTimeline] 无法加载 Cubemap: {exrPath}");
+                return null;
+            }
+
+            int size = sourceCube.width;
+            Color[][] facePixels = new Color[6][];
+            for (int face = 0; face < 6; face++)
+                facePixels[face] = sourceCube.GetPixels((CubemapFace)face);
+
+            sourceCube = null;
+
+            // 4. 计算镜像平面法线（过 Y 轴的垂直平面）
+            float rad = hemisphereAngle * Mathf.Deg2Rad;
+            Vector3 mirrorNormal = new Vector3(Mathf.Sin(rad), 0f, Mathf.Cos(rad));
+
+            // 5. 逐像素处理
+            Color[][] processedPixels = new Color[6][];
+            for (int face = 0; face < 6; face++)
+            {
+                processedPixels[face] = new Color[size * size];
+                for (int y = 0; y < size; y++)
+                {
+                    for (int x = 0; x < size; x++)
+                    {
+                        float u = (x + 0.5f) / size * 2f - 1f;
+                        float v = (y + 0.5f) / size * 2f - 1f;
+                        Vector3 dir = CubemapSHProjector.GetCubemapDirection(face, u, v);
+
+                        float dot = Vector3.Dot(dir, mirrorNormal);
+                        int idx = y * size + x;
+
+                        if (dot < -0.0001f)
+                        {
+                            // 空半球：镜像方向并从实景半球采样
+                            Vector3 mirroredDir = dir - 2f * dot * mirrorNormal;
+                            processedPixels[face][idx] = SampleCubemapBilinear(facePixels, size, mirroredDir);
+                        }
+                        else
+                        {
+                            // 实景半球：保持原样
+                            processedPixels[face][idx] = facePixels[face][idx];
+                        }
+                    }
+                }
+            }
+
+            // 6. 创建横向条带 Texture2D 并编码为 EXR
+            Texture2D stripTex = new Texture2D(size * 6, size, TextureFormat.RGBAFloat, false);
+            for (int face = 0; face < 6; face++)
+                stripTex.SetPixels(face * size, 0, size, size, processedPixels[face]);
+            stripTex.Apply();
+
+            byte[] exrBytes;
+            try
+            {
+                exrBytes = stripTex.EncodeToEXR();
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[EnvTimeline] EXR 编码失败: {e.Message}");
+                Object.DestroyImmediate(stripTex);
+                return null;
+            }
+            Object.DestroyImmediate(stripTex);
+
+            if (exrBytes == null || exrBytes.Length == 0)
+            {
+                Debug.LogError("[EnvTimeline] EXR 编码返回空数据");
+                return null;
+            }
+
+            // 7. 写入文件（覆盖原 EXR）
+            File.WriteAllBytes(exrPath, exrBytes);
+
+            // 8. 恢复导入设置
+            if (importer != null)
+            {
+                importer.isReadable = origReadable;
+                importer.textureType = TextureImporterType.Default;
+                importer.textureShape = TextureImporterShape.TextureCube;
+                importer.generateCubemap = TextureImporterGenerateCubemap.AutoCubemap;
+                importer.sRGBTexture = origSRGB;
+                importer.alphaSource = TextureImporterAlphaSource.None;
+                importer.alphaIsTransparency = false;
+                importer.mipmapEnabled = origMipMaps;
+                importer.borderMipmap = false;
+                importer.npotScale = TextureImporterNPOTScale.ToNearest;
+
+                var so = new SerializedObject(importer);
+                var convProp = so.FindProperty("m_ConvolutionType");
+                if (convProp != null) convProp.intValue = origConvolution;
+                var seamProp = so.FindProperty("m_SeamlessCubemap");
+                if (seamProp != null) seamProp.boolValue = origSeamless;
+                so.ApplyModifiedProperties();
+
+                importer.SaveAndReimport();
+            }
+
+            AssetDatabase.Refresh();
+
+            // 9. 加载处理后的 Cubemap
+            return AssetDatabase.LoadAssetAtPath<Cubemap>(exrPath);
+        }
+
+        /// <summary>
+        /// 将方向向量转换为 Cubemap 面索引和 [0,1] UV 坐标
+        /// </summary>
+        static void DirectionToFaceUV(Vector3 dir, out int face, out float u, out float v)
+        {
+            dir.Normalize();
+            float ax = Mathf.Abs(dir.x);
+            float ay = Mathf.Abs(dir.y);
+            float az = Mathf.Abs(dir.z);
+
+            if (ax >= ay && ax >= az)
+            {
+                if (dir.x > 0) { face = 0; u = -dir.z / ax; v = -dir.y / ax; }
+                else            { face = 1; u =  dir.z / ax; v = -dir.y / ax; }
+            }
+            else if (ay >= ax && ay >= az)
+            {
+                if (dir.y > 0) { face = 2; u =  dir.x / ay; v =  dir.z / ay; }
+                else            { face = 3; u =  dir.x / ay; v = -dir.z / ay; }
+            }
+            else
+            {
+                if (dir.z > 0) { face = 4; u =  dir.x / az; v = -dir.y / az; }
+                else            { face = 5; u = -dir.x / az; v = -dir.y / az; }
+            }
+
+            u = Mathf.Clamp01((u + 1f) * 0.5f);
+            v = Mathf.Clamp01((v + 1f) * 0.5f);
+        }
+
+        /// <summary>
+        /// 从 Cubemap 像素数组中双线性采样
+        /// </summary>
+        static Color SampleCubemapBilinear(Color[][] facePixels, int size, Vector3 dir)
+        {
+            DirectionToFaceUV(dir, out int face, out float u, out float v);
+
+            float px = u * size - 0.5f;
+            float py = v * size - 0.5f;
+
+            int x0 = Mathf.FloorToInt(px);
+            int y0 = Mathf.FloorToInt(py);
+            float fx = px - x0;
+            float fy = py - y0;
+
+            int x1 = x0 + 1;
+            int y1 = y0 + 1;
+
+            x0 = Mathf.Clamp(x0, 0, size - 1);
+            x1 = Mathf.Clamp(x1, 0, size - 1);
+            y0 = Mathf.Clamp(y0, 0, size - 1);
+            y1 = Mathf.Clamp(y1, 0, size - 1);
+
+            Color c00 = facePixels[face][y0 * size + x0];
+            Color c01 = facePixels[face][y1 * size + x0];
+            Color c10 = facePixels[face][y0 * size + x1];
+            Color c11 = facePixels[face][y1 * size + x1];
+
+            Color c0 = Color.Lerp(c00, c01, fy);
+            Color c1 = Color.Lerp(c10, c11, fy);
+            return Color.Lerp(c0, c1, fx);
+        }
+
+        /// <summary>
+        /// 对节点的 Cubemap 进行半球映射独立处理（烘焙后单独处理环境球）
+        /// </summary>
+        void ProcessNodeHemisphereMirror(EnvTimeNode node)
+        {
+            Cubemap cube = node.GetMainCubemap();
+            if (cube == null)
+            {
+                EditorUtility.DisplayDialog("错误", "节点未烘焙 Cubemap，请先烘焙", "确定");
+                return;
+            }
+
+            string cubePath = AssetDatabase.GetAssetPath(cube);
+            if (string.IsNullOrEmpty(cubePath))
+            {
+                EditorUtility.DisplayDialog("错误", "无法获取 Cubemap 资源路径", "确定");
+                return;
+            }
+
+            EditorUtility.DisplayProgressBar("半球映射", "正在处理 Cubemap...", 0f);
+
+            Cubemap processed = ProcessCubemapHemisphereMirror(cubePath, node.hemisphereAngle);
+
+            EditorUtility.ClearProgressBar();
+
+            if (processed != null)
+            {
+                if (node.mainProbe.mode == ReflectionProbeMode.Custom)
+                    node.mainProbe.customBakedTexture = processed;
+                else
+                    node.mainProbe.bakedTexture = processed;
+                EditorUtility.SetDirty(node.mainProbe);
+
+                Debug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {cubePath} (角度: {node.hemisphereAngle}°)");
+                EditorUtility.DisplayDialog("✓ 处理完成",
+                    $"半球映射处理完成\n文件: {cubePath}\n角度: {node.hemisphereAngle}°", "确定");
+            }
+            else
+            {
+                EditorUtility.DisplayDialog("错误", "半球映射处理失败，请查看 Console", "确定");
+            }
+        }
     }
 }
 #endif
