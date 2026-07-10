@@ -1,8 +1,9 @@
 {
     "name": "BYTools.EnvTimeline.Editor",
-    "rootNamespace": "BYTools.EnvTimeline",
     "references": [
-        "BYTools.EnvTimeline.Runtime"
+        "BYTools.EnvTimeline.Runtime",
+        "Unity.Timeline.Editor",
+        "Unity.Timeline"
     ],
     "includePlatforms": [
         "Editor"

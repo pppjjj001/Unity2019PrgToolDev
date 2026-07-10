@@ -460,6 +460,22 @@ namespace BYTools.EnvTimeline
             win.minSize = new Vector2(580, 500);
         }
 
+        /// <summary>
+        /// 窗口获得焦点时自动检测当前选中物体上的 EnvironmentTimelineProData。
+        /// 便于从 Timeline Clip Inspector 的"打开编辑器"按钮快速跳转。
+        /// </summary>
+        void OnFocus()
+        {
+            if (data == null && Selection.activeGameObject != null)
+            {
+                var ctrl = Selection.activeGameObject.GetComponent<EnvironmentTimelineProController>();
+                if (ctrl != null)
+                    data = ctrl.timelineData;
+                else
+                    data = Selection.activeGameObject.GetComponent<EnvironmentTimelineProData>();
+            }
+        }
+
         void OnGUI()
         {
             DrawHeaderBanner();

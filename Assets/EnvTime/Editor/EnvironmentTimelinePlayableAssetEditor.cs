@@ -2,6 +2,8 @@
 #if UNITY_EDITOR
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Playables;
+using UnityEngine.Timeline;
 
 namespace BYTools.EnvTimeline
 {
@@ -13,6 +15,34 @@ namespace BYTools.EnvTimeline
             serializedObject.Update();
 
             var asset = target as EnvironmentTimelineProPlayableAsset;
+
+            // ---- 快速打开编辑器窗口按钮 ----
+            EditorGUILayout.Space(2);
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            EditorGUILayout.LabelField("快捷操作", EditorStyles.boldLabel);
+
+            var controller = FindBoundController();
+            if (controller != null)
+            {
+                EditorGUILayout.LabelField(
+                    $"绑定: {controller.gameObject.name}",
+                    EditorStyles.miniLabel);
+            }
+            else
+            {
+                EditorGUILayout.LabelField(
+                    "未检测到 Track 绑定的 Controller",
+                    EditorStyles.miniLabel);
+            }
+
+            GUI.backgroundColor = new Color(0.4f, 0.9f, 1f);
+            if (GUILayout.Button("_OPEN Environment Timeline 编辑器", GUILayout.Height(28)))
+            {
+                OpenEditorWindow(controller);
+            }
+            GUI.backgroundColor = Color.white;
+            EditorGUILayout.EndVertical();
+            EditorGUILayout.Space(4);
 
             EditorGUILayout.HelpBox(
                 "此 Clip 将 Unity Timeline 的时间映射到环境时间轴上。\n" +
@@ -71,6 +101,46 @@ namespace BYTools.EnvTimeline
             EditorGUILayout.PropertyField(serializedObject.FindProperty("holdOnStop"));
 
             serializedObject.ApplyModifiedProperties();
+        }
+
+        /// <summary>
+        /// 尝试从当前 Timeline 编辑器中查找此 Clip 所在 Track 绑定的 Controller。
+        /// </summary>
+        EnvironmentTimelineProController FindBoundController()
+        {
+            var director = UnityEditor.Timeline.TimelineEditor.inspectedDirector;
+            if (director == null) return null;
+
+            // 遍历所有 Track，查找包含此 asset 的 Clip
+            var timelineAsset = director.playableAsset as TimelineAsset;
+            if (timelineAsset == null) return null;
+
+            foreach (var track in timelineAsset.GetOutputTracks())
+            {
+                foreach (var clip in track.GetClips())
+                {
+                    if (clip.asset == target)
+                    {
+                        return director.GetGenericBinding(track) as EnvironmentTimelineProController;
+                    }
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 打开 EditorWindow 并尝试自动选中 Controller 的 GameObject。
+        /// </summary>
+        static void OpenEditorWindow(EnvironmentTimelineProController controller)
+        {
+            if (controller != null)
+            {
+                Selection.activeGameObject = controller.gameObject;
+            }
+
+            var win = EditorWindow.GetWindow<EnvironmentTimelineEditorWindow>("Env Timeline");
+            win.Show();
+            win.Repaint();
         }
     }
 }
