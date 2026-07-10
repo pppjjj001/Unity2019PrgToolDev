@@ -371,6 +371,16 @@ namespace BYTools.EnvTimeline
         public float hdrClampMax = 5f;
         public float exposure = 1f;
 
+        [Header("半球映射")]
+        [Tooltip("启用后，烘焙完 Cubemap 会自动将空半球用实景半球镜像填充。\n" +
+                 "适用于场景只有一半有实景的情况。")]
+        public bool enableHemisphereMirror = false;
+        [Range(0f, 360f)]
+        [Tooltip("与水平轴 Z 的夹角（度），定义实景半球的中心方向。\n" +
+                 "0° = +Z 方向，90° = +X 方向，180° = -Z 方向，270° = -X 方向。\n" +
+                 "镜面为过 Y 轴的垂直平面，法线指向实景半球。")]
+        public float hemisphereAngle = 0f;
+
         [Header("烘焙结果（自动写入）")]
         public SerializedSH customSH = new SerializedSH();
 

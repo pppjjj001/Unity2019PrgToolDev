@@ -2020,8 +2020,17 @@ namespace BYTools.EnvTimelineSimple
                 {
                     for (int x = 0; x < size; x++)
                     {
+                        // float u = (x + 0.5f) / size * 2f - 1f;
+                        // float v = (y + 0.5f) / size * 2f - 1f;
+                        //Vector3 dir = CubemapSHProjector.GetCubemapDirection(face, u, v);
                         float u = (x + 0.5f) / size * 2f - 1f;
-                        float v = (y + 0.5f) / size * 2f - 1f;
+                        // GetPixels 返回的数据：y=0 在图像底部；
+                        // GetCubemapDirection 中 vAxis 多为 (0,-1,0)，v=+1 对应世界下方。
+                        // 因此像素行 y 需要转换为 v = -(row_normalized)
+                        
+                        float vRaw = (y + 0.5f) / size * 2f - 1f;
+                        // ±Y 面 (face 2, 3) 不翻转 v；其他面翻转
+                        float v = (face == 2 || face == 3) ? vRaw : -vRaw;
                         Vector3 dir = CubemapSHProjector.GetCubemapDirection(face, u, v);
 
                         float dot = Vector3.Dot(dir, mirrorNormal);
@@ -2045,13 +2054,23 @@ namespace BYTools.EnvTimelineSimple
             // 6. 创建横向条带 Texture2D 并编码为 EXR
             Texture2D stripTex = new Texture2D(size * 6, size, TextureFormat.RGBAFloat, false);
             for (int face = 0; face < 6; face++)
-                stripTex.SetPixels(face * size, 0, size, size, processedPixels[face]);
+            {
+                // 上下翻转 y：EncodeToEXR 与 GetPixels 的 y 约定相反，需要预翻转
+                Color[] flipped = new Color[size * size];
+                for (int y = 0; y < size; y++)
+                {
+                    int srcY = size - 1 - y;
+                    System.Array.Copy(processedPixels[face], srcY * size,
+                        flipped, y * size, size);
+                }
+                stripTex.SetPixels(face * size, 0, size, size, flipped);
+            }
             stripTex.Apply();
 
             byte[] exrBytes;
             try
             {
-                exrBytes = stripTex.EncodeToEXR();
+                exrBytes = stripTex.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat);
             }
             catch (System.Exception e)
             {
@@ -2076,7 +2095,7 @@ namespace BYTools.EnvTimelineSimple
                 importer.isReadable = origReadable;
                 importer.textureType = TextureImporterType.Default;
                 importer.textureShape = TextureImporterShape.TextureCube;
-                importer.generateCubemap = TextureImporterGenerateCubemap.AutoCubemap;
+                importer.generateCubemap = TextureImporterGenerateCubemap.FullCubemap;
                 importer.sRGBTexture = origSRGB;
                 importer.alphaSource = TextureImporterAlphaSource.None;
                 importer.alphaIsTransparency = false;
@@ -2102,6 +2121,7 @@ namespace BYTools.EnvTimelineSimple
 
         /// <summary>
         /// 将方向向量转换为 Cubemap 面索引和 [0,1] UV 坐标
+        /// 严格使用与 CubemapSHProjector.GetCubemapDirection 相同的轴定义，保证正反互逆。
         /// </summary>
         static void DirectionToFaceUV(Vector3 dir, out int face, out float u, out float v)
         {
@@ -2110,24 +2130,47 @@ namespace BYTools.EnvTimelineSimple
             float ay = Mathf.Abs(dir.y);
             float az = Mathf.Abs(dir.z);
 
-            if (ax >= ay && ax >= az)
-            {
-                if (dir.x > 0) { face = 0; u = -dir.z / ax; v = -dir.y / ax; }
-                else            { face = 1; u =  dir.z / ax; v = -dir.y / ax; }
-            }
-            else if (ay >= ax && ay >= az)
-            {
-                if (dir.y > 0) { face = 2; u =  dir.x / ay; v =  dir.z / ay; }
-                else            { face = 3; u =  dir.x / ay; v = -dir.z / ay; }
-            }
-            else
-            {
-                if (dir.z > 0) { face = 4; u =  dir.x / az; v = -dir.y / az; }
-                else            { face = 5; u = -dir.x / az; v = -dir.y / az; }
-            }
+            // 1) 确定面
+            if (ax >= ay && ax >= az)      face = dir.x > 0 ? 0 : 1;
+            else if (ay >= ax && ay >= az) face = dir.y > 0 ? 2 : 3;
+            else                            face = dir.z > 0 ? 4 : 5;
 
-            u = Mathf.Clamp01((u + 1f) * 0.5f);
-            v = Mathf.Clamp01((v + 1f) * 0.5f);
+            // 2) 使用与 GetCubemapDirection 相同的 FaceNormal/UAxis/VAxis 反算 (u,v) ∈ [-1,1]
+            // GetCubemapDirection 中：raw = FaceNormal + u*FaceUAxis + v*FaceVAxis
+            // 由于三个基向量两两正交，且 |FaceNormal|=1，
+            // 所以 dir 归一化前的向量 raw 满足 raw·FaceNormal = 1，
+            // 即 raw = dir / (dir·FaceNormal)，再点乘对应轴即可解出 u,v。
+            Vector3[] Normals = {
+                new Vector3( 1, 0, 0), new Vector3(-1, 0, 0),
+                new Vector3( 0, 1, 0), new Vector3( 0,-1, 0),
+                new Vector3( 0, 0, 1), new Vector3( 0, 0,-1),
+            };
+            Vector3[] UAxes = {
+                new Vector3( 0, 0,-1), new Vector3( 0, 0, 1),
+                new Vector3( 1, 0, 0), new Vector3( 1, 0, 0),
+                new Vector3( 1, 0, 0), new Vector3(-1, 0, 0),
+            };
+            Vector3[] VAxes = {
+                new Vector3(0,-1, 0), new Vector3(0,-1, 0),
+                new Vector3(0, 0, 1), new Vector3(0, 0,-1),
+                new Vector3(0,-1, 0), new Vector3(0,-1, 0),
+            };
+
+            float denom = Vector3.Dot(dir, Normals[face]);
+            if (Mathf.Abs(denom) < 1e-6f) denom = (denom < 0f) ? -1e-6f : 1e-6f;
+            Vector3 raw = dir / denom;
+
+            float su = Vector3.Dot(raw, UAxes[face]);   // [-1, 1]
+            float sv = Vector3.Dot(raw, VAxes[face]);   // [-1, 1]
+
+            u = Mathf.Clamp01((su + 1f) * 0.5f);
+            v = Mathf.Clamp01((sv + 1f) * 0.5f);
+            
+            // DirectionToFaceUV 结尾修改：
+            if (face == 2 || face == 3)
+                v = Mathf.Clamp01((sv + 1f) * 0.5f);  // ±Y 面：v 与 sv 同向
+            else
+                v = Mathf.Clamp01((1f - sv) * 0.5f);  // 其他面：v 与 sv 反向（对应 y=0 在底部）
         }
 
         /// <summary>
@@ -2138,7 +2181,14 @@ namespace BYTools.EnvTimelineSimple
             DirectionToFaceUV(dir, out int face, out float u, out float v);
 
             float px = u * size - 0.5f;
-            float py = v * size - 0.5f;
+            // // ⚠️ 关键修复： ⚠️ v 需要翻转，因为：
+            // // - DirectionToFaceUV 中 v=1 对应 vAxis 正方向（多为世界 -Y，即"下方"）
+            // // - 但 GetPixels 数组 y=0 才是图像底部（世界"下方"）
+            // // - 所以要把 uv 空间的 v=1 映射到数组的 y=0
+            // float py = (1f - v) * size - 0.5f;
+            
+            float py = v * size - 0.5f;   // ← 不再统一翻转，翻转已在 DirectionToFaceUV 内处理
+
 
             int x0 = Mathf.FloorToInt(px);
             int y0 = Mathf.FloorToInt(py);
