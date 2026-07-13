@@ -1062,12 +1062,12 @@ namespace BYTools.EnvTimeline
 
             bz.enabled = EditorGUILayout.Toggle(
                 new GUIContent("启用混合区域", "启用后，从前一个节点过渡到此节点时，只有在混合区域内才开始 SH/LightProbe 混合和 Probe 切换。\n" +
-                 "关闭则使用全段线性混合（旧版行为）。"),
+                 "关闭则 SH 使用全段线性混合，Probe 在目标节点位置切换。"),
                 bz.enabled);
 
             if (!bz.enabled)
             {
-                EditorGUILayout.HelpBox("混合区域已关闭，使用全段线性混合（与旧版行为一致）。", MessageType.Info);
+                EditorGUILayout.HelpBox("混合区域已关闭：SH 全段线性混合，Probe 在目标节点位置切换。", MessageType.Info);
                 EditorGUILayout.EndVertical();
                 return;
             }

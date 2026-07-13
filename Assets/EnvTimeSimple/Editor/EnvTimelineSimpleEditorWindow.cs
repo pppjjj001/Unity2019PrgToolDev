@@ -510,7 +510,7 @@ namespace BYTools.EnvTimelineSimple
                 return;
             }
 
-            float bottomReserved = 130f;
+            float bottomReserved = 160f; // 增加底部预留空间以确保按钮完全可见
             float scrollHeight = position.height - GUILayoutUtility.GetLastRect().yMax - bottomReserved - 10f;
             if (scrollHeight < 100f) scrollHeight = 100f;
 
@@ -1091,12 +1091,12 @@ namespace BYTools.EnvTimelineSimple
 
             bz.enabled = EditorGUILayout.Toggle(
                 new GUIContent("启用混合区域", "启用后，从前一个节点过渡到此节点时，只有在混合区域内才开始 SH/LightProbe 混合和 Probe 切换。\n" +
-                 "关闭则使用全段线性混合（旧版行为）。"),
+                 "关闭则 SH 使用全段线性混合，Probe 在目标节点位置切换。"),
                 bz.enabled);
 
             if (!bz.enabled)
             {
-                EditorGUILayout.HelpBox("混合区域已关闭，使用全段线性混合（与旧版行为一致）。", MessageType.Info);
+                EditorGUILayout.HelpBox("混合区域已关闭：SH 全段线性混合，Probe 在目标节点位置切换。", MessageType.Info);
                 EditorGUILayout.EndVertical();
                 return;
             }
@@ -1727,7 +1727,7 @@ namespace BYTools.EnvTimelineSimple
         }
 
         // ============================================================
-        // 🎨 底部固定操作栏（已移除"烘焙所有 Probe"按钮）
+        // 🎨 底部固定操作栏（一键烘焙仅烘焙 SH，不烘焙 ReflectionProbe）
         // ============================================================
         void DrawBottomActions()
         {
@@ -2215,10 +2215,8 @@ namespace BYTools.EnvTimelineSimple
 
         // ============================================================
         // 一键烘焙所有节点 SH
-        //   • 所有模式 Probe 都会烘焙，最终统一保存为 Custom 模式
-        //   • Custom 模式：临时切换到 Baked 烘焙，再切回 Custom
-        //   • Baked/Realtime 模式：烘焙后切换到 Custom
-        //   • 最后统一烘焙所有节点 SH
+        //   • 不烘焙 ReflectionProbe，仅对已有有效反射球（Cubemap）的节点烘焙 SH
+        //   • 无 mainProbe 或 mainProbe 无有效 Cubemap 的节点将被跳过
         // ============================================================
         void BakeAllNodes()
         {
@@ -2226,177 +2224,59 @@ namespace BYTools.EnvTimelineSimple
 
             if (!ValidateNoDuplicateProbes()) return;
 
-            // 收集所有需要烘焙的节点（自带 cubemap 的 Probe 跳过烘焙）
-            List<EnvTimeNode> needsBake = new List<EnvTimeNode>();
-            List<EnvTimeNode> selfContainedNodes = new List<EnvTimeNode>();
+            // 收集所有有有效反射球的节点
+            List<EnvTimeNode> validNodes = new List<EnvTimeNode>();
+            List<EnvTimeNode> skippedNodes = new List<EnvTimeNode>();
             foreach (var node in data.nodes)
             {
-                if (node.mainProbe != null)
-                {
-                    if (IsProbeSelfContained(node.mainProbe))
-                        selfContainedNodes.Add(node);
-                    else
-                        needsBake.Add(node);
-                }
+                if (node.mainProbe != null && node.GetMainCubemap() != null)
+                    validNodes.Add(node);
+                else
+                    skippedNodes.Add(node);
             }
 
-            if (needsBake.Count == 0 && selfContainedNodes.Count == 0)
+            if (validNodes.Count == 0)
             {
-                EditorUtility.DisplayDialog("提示", "没有可烘焙的节点（未指定主 Probe）", "确定");
+                EditorUtility.DisplayDialog("提示",
+                    "没有可烘焙 SH 的节点（所有节点均无有效的反射球 Cubemap）。\n"
+                    + "请先为节点指定 ReflectionProbe 并烘焙或指定 Cubemap。", "确定");
                 return;
             }
 
-            if (needsBake.Count == 0)
+            if (skippedNodes.Count > 0)
             {
-                EditorUtility.DisplayDialog("提示",
-                    $"所有 {selfContainedNodes.Count} 个节点的 Probe 均自带 Cubemap，无需烘焙。\n"
-                    + "将直接进行 SH 投影。", "确定");
-            }
-            else if (selfContainedNodes.Count > 0)
-            {
-                Debug.Log($"[EnvTimeline] {selfContainedNodes.Count} 个节点的 Probe 自带 Cubemap，跳过 Probe 烘焙，仅烘焙 SH");
+                Debug.Log($"[EnvTimeline] {skippedNodes.Count} 个节点无有效反射球，跳过 SH 烘焙："
+                    + string.Join(", ", skippedNodes.ConvertAll(n => n.nodeName)));
             }
 
-            // 检查是否有需要用户选择目录的节点
-            //（Custom 模式且无现有纹理，或 Baked/Realtime 模式）
-            bool needFolderPick = false;
-            foreach (var node in needsBake)
-            {
-                var probe = node.mainProbe;
-                if (probe.mode == ReflectionProbeMode.Custom && probe.customBakedTexture != null)
-                    continue; // Custom 有现有纹理，使用同目录替换
-                needFolderPick = true;
-                break;
-            }
-
-            string defaultFolder = null;
-            if (needFolderPick)
-            {
-                if (!TryPickAssetsFolder(
-                        $"选择烘焙保存目录 (需烘焙 {needsBake.Count} 个 Probe，最终保存为 Custom 模式)",
-                        out defaultFolder))
-                {
-                    Debug.Log("[EnvTimeline] 用户取消了操作");
-                    return;
-                }
-            }
-
-            // ---- 烘焙所有 Probe（最终统一保存为 Custom 模式）----
-            EditorUtility.DisplayProgressBar("烘焙 Probe", "正在烘焙 ReflectionProbe...", 0f);
-            int bakeOk = 0, bakeFail = 0;
-            for (int i = 0; i < needsBake.Count; i++)
-            {
-                var node = needsBake[i];
-                EditorUtility.DisplayProgressBar("烘焙 Probe",
-                    $"烘焙 {node.nodeName} 的 Probe ({i + 1}/{needsBake.Count})",
-                    (float)i / needsBake.Count);
-
-                var probe = node.mainProbe;
-                var originalMode = probe.mode;
-
-                // 记录 Custom 模式现有纹理路径（用于同目录同名称替换）
-                string existingCustomPath = null;
-                if (originalMode == ReflectionProbeMode.Custom && probe.customBakedTexture != null)
-                    existingCustomPath = AssetDatabase.GetAssetPath(probe.customBakedTexture);
-
-                // 确定烘焙文件路径
-                string filename;
-                if (!string.IsNullOrEmpty(existingCustomPath))
-                {
-                    // Custom 模式有现有纹理：使用相同目录和基础名称生成 .exr 替换
-                    string dir = Path.GetDirectoryName(existingCustomPath)?.Replace('\\', '/');
-                    string baseName = Path.GetFileNameWithoutExtension(existingCustomPath);
-                    filename = $"{dir}/{baseName}.exr";
-                    // 记忆该目录，便于后续烘焙优先打开
-                    if (!string.IsNullOrEmpty(dir))
-                        EditorPrefs.SetString(PREF_LAST_BAKE_FOLDER, dir);
-                }
-                else
-                {
-                    int bakedFileIndex = GetNextBakedFileIndex(defaultFolder);
-                    filename = $"{defaultFolder}/Baked_{bakedFileIndex:D3}.exr";
-                }
-
-                // Custom 模式：临时切换到 Baked 模式进行烘焙
-                bool wasCustom = (originalMode == ReflectionProbeMode.Custom);
-                if (wasCustom)
-                    probe.mode = ReflectionProbeMode.Baked;
-
-                bool nodeBakeOk;
-                using (ReflectionProbeStaticScope.Create(node.reflectionProbeBakeTargets))
-                {
-                    nodeBakeOk = Lightmapping.BakeReflectionProbe(probe, filename);
-                }
-                if (nodeBakeOk)
-                {
-                    // 最终都保存为 Custom 模式
-                    probe.mode = ReflectionProbeMode.Custom;
-
-                    AssetDatabase.Refresh();
-                    var bakedTex = AssetDatabase.LoadAssetAtPath<Cubemap>(filename);
-                    if (bakedTex != null)
-                    {
-                        probe.customBakedTexture = bakedTex;
-                        EditorUtility.SetDirty(probe);
-                    }
-                    // 半球映射后处理
-                    if (node.enableHemisphereMirror)
-                    {
-                        Cubemap processedCube = ProcessCubemapHemisphereMirror(filename, node.hemisphereAngle);
-                        if (processedCube != null)
-                        {
-                            probe.customBakedTexture = processedCube;
-                            EditorUtility.SetDirty(probe);
-                            Debug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {filename} (角度: {node.hemisphereAngle}°)");
-                        }
-                    }
-                    bakeOk++;
-                    Debug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
-                }
-                else
-                {
-                    // 烘焙失败：恢复原始模式
-                    probe.mode = originalMode;
-                    bakeFail++;
-                    Debug.LogError($"[EnvTimeline] Probe 烘焙失败: {probe.name}");
-                }
-            }
-            AssetDatabase.SaveAssets();
-            AssetDatabase.Refresh();
-            EditorUtility.ClearProgressBar();
-            Debug.Log($"[EnvTimeline] 已烘焙 {bakeOk} 个 Probe (失败 {bakeFail})，所有 Probe 已切换为 Custom 模式");
-
-            // ---- 烘焙所有节点 SH ----
+            // ---- 烘焙所有有效节点的 SH ----
             int ok = 0, fail = 0;
-            for (int i = 0; i < data.nodes.Count; i++)
+            for (int i = 0; i < validNodes.Count; i++)
             {
-                var node = data.nodes[i];
+                var node = validNodes[i];
                 EditorUtility.DisplayProgressBar("批量烘焙 SH",
-                    $"{node.nodeName} ({i + 1}/{data.nodes.Count})",
-                    (float)i / data.nodes.Count);
+                    $"{node.nodeName} ({i + 1}/{validNodes.Count})",
+                    (float)i / validNodes.Count);
 
-                if (node.mainProbe == null || node.GetMainCubemap() == null)
+                try
                 {
-                    fail++;
-                    continue;
+                    BakeNodeSH(node);
+                    ok++;
                 }
-
-                BakeNodeSH(node);
-                ok++;
+                catch (System.Exception ex)
+                {
+                    Debug.LogError($"[EnvTimeline] 节点 [{node.nodeName}] SH 烘焙失败: {ex.Message}");
+                    fail++;
+                }
             }
 
             EditorUtility.ClearProgressBar();
 
-            string summary = $"✓ SH 成功 {ok} 个，✗ SH 失败 {fail} 个";
-            if (needsBake.Count > 0)
-            {
-                summary += $"\n已烘焙 {bakeOk} 个 Probe (失败 {bakeFail})";
-                summary += $"\n所有 Probe 已切换为 Custom 模式";
-            }
-            if (selfContainedNodes.Count > 0)
-            {
-                summary += $"\n跳过 {selfContainedNodes.Count} 个自带 Cubemap 的 Probe（仅烘焙 SH）";
-            }
+            string summary = $"✓ SH 成功 {ok} 个";
+            if (fail > 0)
+                summary += $"，✗ SH 失败 {fail} 个";
+            if (skippedNodes.Count > 0)
+                summary += $"\n跳过 {skippedNodes.Count} 个无有效反射球的节点";
 
             EditorUtility.DisplayDialog("批量烘焙完成", summary, "确定");
         }

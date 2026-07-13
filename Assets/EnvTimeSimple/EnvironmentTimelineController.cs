@@ -85,7 +85,7 @@ namespace Hotfix.Core.EnvTimelineSimple
             // ★ BlendZone：使用 to 节点的混合区域设置来计算 SH 混合权重
             BlendZone bz = to != null ? to.blendZone : null;
             float shT = bz != null ? bz.EvaluateSHBlend(t) : t;
-            float probeBlend = bz != null ? bz.EvaluateProbeBlend(t) : (t >= 0.5f ? 1f : 0f);
+            float probeBlend = bz != null ? bz.EvaluateProbeBlend(t) : (t >= 1f ? 1f : 0f);
 
             SerializedSH lerpedSH = SerializedSH.Lerp(from.customSH, to.customSH, shT);
 
@@ -223,8 +223,8 @@ namespace Hotfix.Core.EnvTimelineSimple
             else
             {
                 // ★ BlendZone：根据混合区域设置决定 Probe 切换
-                float probeBlend = bz != null ? bz.EvaluateProbeBlend(t) : (t >= 0.5f ? 1f : 0f);
-                bool useToProbe = bz != null ? bz.ShouldSwitchProbe(t) : (t >= 0.5f);
+                float probeBlend = bz != null ? bz.EvaluateProbeBlend(t) : (t >= 1f ? 1f : 0f);
+                bool useToProbe = bz != null ? bz.ShouldSwitchProbe(t) : (t >= 1f);
                 float smoothW = bz != null && bz.enabled
                     ? Mathf.Clamp01(bz.probeSwitchSmoothWidth) : 0f;
 

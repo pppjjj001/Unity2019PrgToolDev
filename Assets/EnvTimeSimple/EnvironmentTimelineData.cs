@@ -176,7 +176,7 @@ namespace Hotfix.Core.EnvTimelineSimple
     [Serializable]
     public class BlendZone
     {
-        [Tooltip("启用自定义混合区域（关闭则使用全段线性混合，与旧版行为一致）")]
+        [Tooltip("启用自定义混合区域（关闭则 SH 全段线性混合，Probe 在目标节点位置切换）")]
         public bool enabled = false;
 
         [Range(0f, 1f)]
@@ -229,7 +229,7 @@ namespace Hotfix.Core.EnvTimelineSimple
         /// </summary>
         public bool ShouldSwitchProbe(float rawT)
         {
-            if (!enabled) return rawT >= 0.5f; // 未启用时保持旧版行为（50% 切换）
+            if (!enabled) return rawT >= 1f; // 未启用时在目标节点位置切换（rawT=1）
 
             float s = Mathf.Clamp01(start);
             float e = Mathf.Clamp01(end);
@@ -246,7 +246,7 @@ namespace Hotfix.Core.EnvTimelineSimple
         /// </summary>
         public float EvaluateProbeBlend(float rawT)
         {
-            if (!enabled) return rawT >= 0.5f ? 1f : 0f;
+            if (!enabled) return rawT >= 1f ? 1f : 0f;
 
             float s = Mathf.Clamp01(start);
             float e = Mathf.Clamp01(end);
