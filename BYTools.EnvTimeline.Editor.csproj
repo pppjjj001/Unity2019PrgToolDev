@@ -55,9 +55,16 @@
      <Compile Include="Assets\EnvTime\Editor\EnvironmentTimelineControllerEditor.cs" />
      <Compile Include="Assets\EnvTime\Editor\EnvironmentTimelineEditorWindow.cs" />
      <Compile Include="Assets\EnvTime\Editor\EnvironmentTimelinePlayableAssetEditor.cs" />
+     <Compile Include="Assets\EnvTime\Editor\EnvironmentTimelineProClipEditor.cs" />
      <Compile Include="Assets\EnvTime\Editor\LightProbeBaker.cs" />
      <Compile Include="Assets\EnvTime\Editor\LightProbePlacementUtility.cs" />
      <None Include="Assets\EnvTime\Editor\BYTools.EnvTimeline.Editor.asmdef" />
+ <Reference Include="Unity.Timeline.Editor">
+ <HintPath>I:/2019Program/Unity2019PrgToolDev/Library/ScriptAssemblies/Unity.Timeline.Editor.dll</HintPath>
+ </Reference>
+ <Reference Include="Unity.Timeline">
+ <HintPath>I:/2019Program/Unity2019PrgToolDev/Library/ScriptAssemblies/Unity.Timeline.dll</HintPath>
+ </Reference>
  <Reference Include="UnityEditor.UI">
  <HintPath>I:/2019Program/Unity2019PrgToolDev/Library/ScriptAssemblies/UnityEditor.UI.dll</HintPath>
  </Reference>

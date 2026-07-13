@@ -429,6 +429,11 @@ namespace BYTools.EnvTimeline
         bool draggingNode = false;
         int draggingIndex = -1;
 
+        // BlendZone 拖拽状态
+        enum BlendDragMode { None, Start, End, ProbeSwitch }
+        BlendDragMode blendDragMode = BlendDragMode.None;
+        int blendDragNodeIndex = -1;
+
         float previewTime = 0f;
         bool draggingPreview = false;
         const float PREVIEW_HANDLE_HEIGHT = 50f;
@@ -452,6 +457,11 @@ namespace BYTools.EnvTimeline
         static readonly Color CLR_MUTED       = new Color(0.55f, 0.55f, 0.55f);
         static readonly Color CLR_BG_PANEL    = new Color(0.22f, 0.22f, 0.26f);
         static readonly Color CLR_BG_DUP      = new Color(0.6f, 0.15f, 0.15f);
+        // BlendZone 颜色
+        static readonly Color CLR_BLEND_ZONE  = new Color(0.8f, 0.5f, 1f, 0.25f);
+        static readonly Color CLR_BLEND_EDGE  = new Color(0.8f, 0.5f, 1f, 0.6f);
+        static readonly Color CLR_PROBE_SWITCH = new Color(1f, 0.3f, 0.3f, 0.8f);
+        static readonly Color CLR_PROBE_SMOOTH = new Color(1f, 0.6f, 0.2f, 0.3f);
 
         [MenuItem("Tools/BYTools/Environment Timeline 编辑器", false, 110)]
         public static void Open()
@@ -739,6 +749,9 @@ namespace BYTools.EnvTimeline
             Event e = Event.current;
             var dupSet = GetDuplicateProbeNodeIndices();
 
+            // ★ 绘制 BlendZone 混合区域（在节点下方）
+            DrawBlendZonesOnTimeline(e);
+
             if (e.type == EventType.MouseDown &&
                 selectedNodeIndex >= 0 && selectedNodeIndex < data.nodes.Count)
             {
@@ -835,7 +848,298 @@ namespace BYTools.EnvTimeline
             DrawLegendDot(new Color(0.4f, 1f, 0.6f), "已烘焙SH");
             DrawLegendDot(new Color(0.3f, 0.7f, 1f), "未烘焙");
             DrawLegendDot(CLR_ERROR, "Probe重复");
+            DrawLegendDot(CLR_BLEND_EDGE, "混合区域");
+            DrawLegendDot(CLR_PROBE_SWITCH, "Probe瞄点");
             EditorGUILayout.EndHorizontal();
+        }
+
+        // ============================================================
+        // ★ BlendZone 时间轴可视化
+        // ============================================================
+        void DrawBlendZonesOnTimeline(Event e)
+        {
+            if (data == null || data.nodes.Count < 2) return;
+
+            for (int i = 0; i < data.nodes.Count; i++)
+            {
+                int fromIdx = i - 1;
+                int toIdx = i;
+
+                if (fromIdx < 0)
+                {
+                    if (data.loop && !data.holdAtEnd && data.nodes.Count >= 2)
+                    {
+                        fromIdx = data.nodes.Count - 1;
+                        toIdx = 0;
+                        DrawSingleBlendZone(e, fromIdx, toIdx, true);
+                    }
+                    continue;
+                }
+
+                DrawSingleBlendZone(e, fromIdx, toIdx, false);
+            }
+        }
+
+        void DrawSingleBlendZone(Event e, int fromIdx, int toIdx, bool isWrap)
+        {
+            var fromNode = data.nodes[fromIdx];
+            var toNode = data.nodes[toIdx];
+            var bz = toNode.blendZone;
+            if (bz == null || !bz.enabled) return;
+
+            float fromX, toX;
+            if (isWrap)
+            {
+                fromX = timelineRect.x + timelineRect.width * Mathf.Clamp01(fromNode.time / data.totalDuration);
+                toX = timelineRect.x + timelineRect.width * Mathf.Clamp01(toNode.time / data.totalDuration);
+                if (toX <= fromX) toX = timelineRect.x + timelineRect.width;
+            }
+            else
+            {
+                fromX = timelineRect.x + timelineRect.width * Mathf.Clamp01(fromNode.time / data.totalDuration);
+                toX = timelineRect.x + timelineRect.width * Mathf.Clamp01(toNode.time / data.totalDuration);
+            }
+
+            if (toX <= fromX + 2f) return;
+
+            float gap = toX - fromX;
+            float s = Mathf.Clamp01(bz.start);
+            float en = Mathf.Clamp01(bz.end);
+            if (en <= s) en = Mathf.Min(1f, s + 0.001f);
+
+            float blendStartX = fromX + gap * s;
+            float blendEndX = fromX + gap * en;
+            float blendWidth = blendEndX - blendStartX;
+
+            Rect blendRect = new Rect(blendStartX, timelineRect.y + 4, blendWidth, TIMELINE_HEIGHT - 32);
+            EditorGUI.DrawRect(blendRect, CLR_BLEND_ZONE);
+
+            EditorGUI.DrawRect(new Rect(blendStartX, timelineRect.y + 4, 2, TIMELINE_HEIGHT - 32), CLR_BLEND_EDGE);
+            EditorGUI.DrawRect(new Rect(blendEndX - 1, timelineRect.y + 4, 2, TIMELINE_HEIGHT - 32), CLR_BLEND_EDGE);
+
+            DrawBlendCurveMini(blendRect, bz.shBlendCurve);
+
+            float switchLocalT = Mathf.Clamp01(bz.probeSwitchPoint);
+            float switchRawT = Mathf.Lerp(s, en, switchLocalT);
+            float switchX = fromX + gap * switchRawT;
+
+            float smoothW = Mathf.Clamp01(bz.probeSwitchSmoothWidth) * (en - s) * 0.5f;
+            if (smoothW > 0.001f)
+            {
+                float smoothStartX = fromX + gap * (switchRawT - smoothW);
+                float smoothEndX = fromX + gap * (switchRawT + smoothW);
+                Rect smoothRect = new Rect(smoothStartX, timelineRect.y + 4, smoothEndX - smoothStartX, TIMELINE_HEIGHT - 32);
+                EditorGUI.DrawRect(smoothRect, CLR_PROBE_SMOOTH);
+            }
+
+            Rect switchRect = new Rect(switchX - 1, timelineRect.y + 2, 3, TIMELINE_HEIGHT - 28);
+            EditorGUI.DrawRect(switchRect, CLR_PROBE_SWITCH);
+
+            Rect triRect = new Rect(switchX - 5, timelineRect.y + 2, 10, 6);
+            EditorGUI.DrawRect(triRect, CLR_PROBE_SWITCH);
+
+            GUI.Label(new Rect(blendStartX, timelineRect.y + TIMELINE_HEIGHT - 26, blendWidth, 12),
+                "⟷", EditorStyles.miniLabel);
+
+            bool isThisNodeSelected = (toIdx == selectedNodeIndex);
+
+            Rect startHandle = new Rect(blendStartX - 4, timelineRect.y + 4, 8, TIMELINE_HEIGHT - 32);
+            EditorGUIUtility.AddCursorRect(startHandle, MouseCursor.ResizeHorizontal);
+            if (isThisNodeSelected && e.type == EventType.MouseDown && startHandle.Contains(e.mousePosition))
+            {
+                blendDragMode = BlendDragMode.Start;
+                blendDragNodeIndex = toIdx;
+                e.Use();
+            }
+
+            Rect endHandle = new Rect(blendEndX - 4, timelineRect.y + 4, 8, TIMELINE_HEIGHT - 32);
+            EditorGUIUtility.AddCursorRect(endHandle, MouseCursor.ResizeHorizontal);
+            if (isThisNodeSelected && e.type == EventType.MouseDown && endHandle.Contains(e.mousePosition))
+            {
+                blendDragMode = BlendDragMode.End;
+                blendDragNodeIndex = toIdx;
+                e.Use();
+            }
+
+            Rect switchHandle = new Rect(switchX - 6, timelineRect.y + 2, 12, TIMELINE_HEIGHT - 28);
+            EditorGUIUtility.AddCursorRect(switchHandle, MouseCursor.MoveArrow);
+            if (isThisNodeSelected && e.type == EventType.MouseDown && switchHandle.Contains(e.mousePosition))
+            {
+                blendDragMode = BlendDragMode.ProbeSwitch;
+                blendDragNodeIndex = toIdx;
+                e.Use();
+            }
+
+            if (blendDragMode != BlendDragMode.None && blendDragNodeIndex == toIdx)
+            {
+                if (e.type == EventType.MouseDrag)
+                {
+                    float rawT = Mathf.Clamp01((e.mousePosition.x - fromX) / gap);
+                    Undo.RecordObject(data, "Edit BlendZone");
+
+                    var dragBz = data.nodes[blendDragNodeIndex].blendZone;
+                    switch (blendDragMode)
+                    {
+                        case BlendDragMode.Start:
+                            dragBz.start = Mathf.Clamp01(rawT);
+                            if (dragBz.start >= dragBz.end) dragBz.start = dragBz.end - 0.01f;
+                            break;
+                        case BlendDragMode.End:
+                            dragBz.end = Mathf.Clamp01(rawT);
+                            if (dragBz.end <= dragBz.start) dragBz.end = dragBz.start + 0.01f;
+                            break;
+                        case BlendDragMode.ProbeSwitch:
+                            float localT = (rawT - dragBz.start) / (dragBz.end - dragBz.start);
+                            dragBz.probeSwitchPoint = Mathf.Clamp01(localT);
+                            break;
+                    }
+                    e.Use();
+                    GUI.changed = true;
+                    ApplyPreview();
+                }
+
+                if (e.type == EventType.MouseUp)
+                {
+                    blendDragMode = BlendDragMode.None;
+                    blendDragNodeIndex = -1;
+                }
+            }
+        }
+
+        void DrawBlendCurveMini(Rect rect, BlendCurveType curve)
+        {
+            int steps = 24;
+            Color curveColor = new Color(0.8f, 0.5f, 1f, 0.6f);
+            for (int i = 0; i < steps; i++)
+            {
+                float t0 = i / (float)steps;
+                float t1 = (i + 1) / (float)steps;
+                float y0 = ApplyCurveMini(t0, curve);
+                float y1 = ApplyCurveMini(t1, curve);
+
+                float x0 = rect.x + rect.width * t0;
+                float x1 = rect.x + rect.width * t1;
+                float py0 = rect.y + rect.height * (1f - y0);
+                float py1 = rect.y + rect.height * (1f - y1);
+
+                EditorGUI.DrawRect(new Rect(x0, py0, x1 - x0 + 1, Mathf.Max(1, py1 - py0)), curveColor);
+            }
+        }
+
+        static float ApplyCurveMini(float t, BlendCurveType curve)
+        {
+            switch (curve)
+            {
+                case BlendCurveType.Linear: return t;
+                case BlendCurveType.SmoothStep: return Mathf.SmoothStep(0f, 1f, t);
+                case BlendCurveType.EaseIn: return t * t;
+                case BlendCurveType.EaseOut: return 1f - (1f - t) * (1f - t);
+                case BlendCurveType.EaseInOut: return t * t * (3f - 2f * t);
+                default: return t;
+            }
+        }
+
+        // ============================================================
+        // ★ BlendZone Inspector 面板
+        // ============================================================
+        void DrawBlendZoneInspector(EnvTimeNode node)
+        {
+            if (node == null || node.blendZone == null) return;
+            var bz = node.blendZone;
+
+            int nodeIdx = data.nodes.IndexOf(node);
+            bool hasPrevNode = nodeIdx > 0 || (data.loop && !data.holdAtEnd && data.nodes.Count >= 2);
+
+            DrawSectionHeader("混合区域 (BlendZone)", CLR_BLEND_EDGE, "🔀");
+
+            if (!hasPrevNode)
+            {
+                EditorGUILayout.HelpBox("此节点是第一个节点且无循环过渡，混合区域不生效。", MessageType.Info);
+                return;
+            }
+
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+
+            bz.enabled = EditorGUILayout.Toggle(
+                new GUIContent("启用混合区域", "启用后，从前一个节点过渡到此节点时，只有在混合区域内才开始 SH/LightProbe 混合和 Probe 切换。\n" +
+                 "关闭则使用全段线性混合（旧版行为）。"),
+                bz.enabled);
+
+            if (!bz.enabled)
+            {
+                EditorGUILayout.HelpBox("混合区域已关闭，使用全段线性混合（与旧版行为一致）。", MessageType.Info);
+                EditorGUILayout.EndVertical();
+                return;
+            }
+
+            EditorGUILayout.Space(4);
+
+            EditorGUILayout.LabelField("混合区域范围 (占两节点间距的百分比)", EditorStyles.miniBoldLabel);
+            EditorGUILayout.BeginHorizontal();
+            bz.start = EditorGUILayout.Slider("起始", bz.start, 0f, 1f);
+            bz.end = EditorGUILayout.Slider("结束", bz.end, 0f, 1f);
+            EditorGUILayout.EndHorizontal();
+
+            if (bz.start >= bz.end)
+            {
+                EditorGUILayout.HelpBox("起始位置不能大于等于结束位置！已自动修正。", MessageType.Warning);
+                if (bz.start >= bz.end) bz.end = Mathf.Min(1f, bz.start + 0.01f);
+            }
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("居中 (0.3~0.7)", GUILayout.Width(120)))
+            {
+                bz.start = 0.3f; bz.end = 0.7f; bz.probeSwitchPoint = 0.5f;
+            }
+            if (GUILayout.Button("前移 (0.1~0.4)", GUILayout.Width(120)))
+            {
+                bz.start = 0.1f; bz.end = 0.4f; bz.probeSwitchPoint = 0.5f;
+            }
+            if (GUILayout.Button("后移 (0.6~0.9)", GUILayout.Width(120)))
+            {
+                bz.start = 0.6f; bz.end = 0.9f; bz.probeSwitchPoint = 0.5f;
+            }
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.Space(4);
+
+            DrawSectionHeader("ReflectionProbe 切换瞄点", CLR_PROBE_SWITCH, "🎯");
+            bz.probeSwitchPoint = EditorGUILayout.Slider(
+                new GUIContent("切换位置", "在混合区域 [start, end] 内的归一化位置。\n" +
+                 "0 = 混合区域起点切换，1 = 混合区域终点切换，0.5 = 中点切换。"),
+                bz.probeSwitchPoint, 0f, 1f);
+
+            bz.probeSwitchSmoothWidth = EditorGUILayout.Slider(
+                new GUIContent("平滑宽度", "Probe 切换的平滑过渡半宽（在混合区域内的归一化值）。\n" +
+                 "0 = 硬切换（瞬切），>0 = 在瞄点两侧此宽度范围内平滑过渡。\n" +
+                 "⚠️ 平滑过渡期间两个 Probe 同时启用，需要 Shader 支持反射球融合。"),
+                bz.probeSwitchSmoothWidth, 0f, 0.5f);
+
+            if (bz.probeSwitchSmoothWidth > 0f)
+            {
+                EditorGUILayout.HelpBox(
+                    "⚠️ 平滑宽度 > 0 时，切换期间两个 ReflectionProbe 同时启用。\n" +
+                    "需要 Shader 支持反射球融合（Box Projection Blend），否则可能出现渲染异常。",
+                    MessageType.Warning);
+            }
+
+            EditorGUILayout.Space(4);
+
+            DrawSectionHeader("SH/LightProbe 混合曲线", CLR_OK, "📈");
+            bz.shBlendCurve = (BlendCurveType)EditorGUILayout.EnumPopup(
+                new GUIContent("曲线类型", "SH/LightProbe 在混合区域内的插值曲线类型"),
+                bz.shBlendCurve);
+
+            Rect curveRect = GUILayoutUtility.GetRect(0, 40, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(curveRect, new Color(0.15f, 0.15f, 0.2f));
+            DrawBlendCurveMini(curveRect, bz.shBlendCurve);
+
+            EditorGUILayout.Space(2);
+            EditorGUILayout.LabelField("曲线说明:", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField("  Linear = 线性, SmoothStep = S形, EaseIn = 先慢后快, EaseOut = 先快后慢, EaseInOut = 两端慢中间快",
+                EditorStyles.miniLabel);
+
+            EditorGUILayout.EndVertical();
         }
 
         void DrawTimelineNode(int i, HashSet<int> dupSet, bool isSelected)
@@ -1299,6 +1603,9 @@ namespace BYTools.EnvTimeline
                     "用实景半球镜像填充。\n适用于场景只有一半有实景的情况。",
                     MessageType.Info);
             }
+
+            EditorGUILayout.Space(4);
+            DrawBlendZoneInspector(node);
 
             EditorGUILayout.BeginHorizontal();
             GUI.backgroundColor = CLR_OK;

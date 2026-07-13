@@ -346,6 +346,142 @@ namespace BYTools.EnvTimeline
         }
     }
 
+    /// <summary>
+    /// 混合区域曲线类型
+    /// </summary>
+    public enum BlendCurveType
+    {
+        [Tooltip("线性插值")]
+        Linear,
+        [Tooltip("SmoothStep 平滑过渡（S形曲线）")]
+        SmoothStep,
+        [Tooltip("Ease In（先慢后快）")]
+        EaseIn,
+        [Tooltip("Ease Out（先快后慢）")]
+        EaseOut,
+        [Tooltip("Ease Inout（两端慢中间快）")]
+        EaseInOut,
+    }
+
+    /// <summary>
+    /// 混合区域（BlendZone）：定义从当前节点过渡到下一个节点时的混合行为。
+    /// 
+    /// 时间轴结构示意（两节点之间的间隙 [0,1]）：
+    ///   NodeA ────[保持A]──── [start ── 混合区域 ── end] ────[保持B]──── NodeB
+    ///                                    └ probeSwitchPoint ┘
+    /// 
+    /// - start/end：混合区域在两节点间隙中的归一化位置 [0,1]
+    /// - probeSwitchPoint：ReflectionProbe 切换瞄点在混合区域内的归一化位置 [0,1]
+    /// - shBlendCurve：SH/LightProbe 在混合区域内的插值曲线类型
+    /// </summary>
+    [Serializable]
+    public class BlendZone
+    {
+        [Tooltip("启用自定义混合区域（关闭则使用全段线性混合，与旧版行为一致）")]
+        public bool enabled = false;
+
+        [Range(0f, 1f)]
+        [Tooltip("混合区域起始位置（占两节点间距的百分比）\n" +
+                 "此点之前完全使用当前节点（From）的环境数据。")]
+        public float start = 0.3f;
+
+        [Range(0f, 1f)]
+        [Tooltip("混合区域结束位置（占两节点间距的百分比）\n" +
+                 "此点之后完全使用目标节点（To）的环境数据。")]
+        public float end = 0.7f;
+
+        [Range(0f, 1f)]
+        [Tooltip("ReflectionProbe 切换瞄点（在混合区域 [start,end] 内的归一化位置）\n" +
+                 "0 = 混合区域起点切换，1 = 混合区域终点切换，0.5 = 中点切换。\n" +
+                 "瞄点之前保持 From 的 Probe，瞄点之后切换为 To 的 Probe。")]
+        public float probeSwitchPoint = 0.5f;
+
+        [Range(0f, 0.5f)]
+        [Tooltip("Probe 切换平滑宽度（在混合区域内的归一化半宽）\n" +
+                 "0 = 硬切换（瞬切），>0 = 在瞄点两侧此宽度范围内平滑过渡。\n" +
+                 "⚠️ 平滑过渡期间两个 Probe 同时启用，需要 Shader 支持反射球融合。")]
+        public float probeSwitchSmoothWidth = 0f;
+
+        [Tooltip("SH/LightProbe 在混合区域内的插值曲线类型")]
+        public BlendCurveType shBlendCurve = BlendCurveType.SmoothStep;
+
+        /// <summary>
+        /// 根据 rawT（两节点间的原始归一化插值 0~1）计算 SH 混合权重。
+        /// 返回值 0 = 完全使用 From，1 = 完全使用 To。
+        /// </summary>
+        public float EvaluateSHBlend(float rawT)
+        {
+            if (!enabled) return rawT;
+
+            float s = Mathf.Clamp01(start);
+            float e = Mathf.Clamp01(end);
+            if (e <= s) e = Mathf.Min(1f, s + 0.001f);
+
+            if (rawT <= s) return 0f;
+            if (rawT >= e) return 1f;
+
+            float localT = (rawT - s) / (e - s);
+            return ApplyCurve(localT, shBlendCurve);
+        }
+
+        /// <summary>
+        /// 根据 rawT 计算 ReflectionProbe 应该激活的节点标识。
+        /// 返回 false = 激活 From 的 Probe，true = 激活 To 的 Probe。
+        /// </summary>
+        public bool ShouldSwitchProbe(float rawT)
+        {
+            if (!enabled) return rawT >= 0.5f;
+
+            float s = Mathf.Clamp01(start);
+            float e = Mathf.Clamp01(end);
+            if (e <= s) e = Mathf.Min(1f, s + 0.001f);
+
+            float switchRaw = Mathf.Lerp(s, e, Mathf.Clamp01(probeSwitchPoint));
+            return rawT >= switchRaw;
+        }
+
+        /// <summary>
+        /// 根据 rawT 计算 Probe 平滑过渡权重（用于 Shader 支持反射球融合时）。
+        /// 返回值 0 = 完全使用 From 的 Probe，1 = 完全使用 To 的 Probe。
+        /// probeSwitchSmoothWidth=0 时为硬切换（返回值仅在 0/1 之间跳变）。
+        /// </summary>
+        public float EvaluateProbeBlend(float rawT)
+        {
+            if (!enabled) return rawT >= 0.5f ? 1f : 0f;
+
+            float s = Mathf.Clamp01(start);
+            float e = Mathf.Clamp01(end);
+            if (e <= s) e = Mathf.Min(1f, s + 0.001f);
+
+            float switchRaw = Mathf.Lerp(s, e, Mathf.Clamp01(probeSwitchPoint));
+            float smoothW = Mathf.Clamp01(probeSwitchSmoothWidth) * (e - s) * 0.5f;
+
+            if (smoothW <= 0.001f)
+                return rawT >= switchRaw ? 1f : 0f;
+
+            return Mathf.Clamp01((rawT - (switchRaw - smoothW)) / (smoothW * 2f));
+        }
+
+        static float ApplyCurve(float t, BlendCurveType curve)
+        {
+            switch (curve)
+            {
+                case BlendCurveType.Linear:
+                    return t;
+                case BlendCurveType.SmoothStep:
+                    return Mathf.SmoothStep(0f, 1f, t);
+                case BlendCurveType.EaseIn:
+                    return t * t;
+                case BlendCurveType.EaseOut:
+                    return 1f - (1f - t) * (1f - t);
+                case BlendCurveType.EaseInOut:
+                    return t * t * (3f - 2f * t);
+                default:
+                    return t;
+            }
+        }
+    }
+
     [Serializable]
     public class EnvTimeNode
     {
@@ -363,6 +499,11 @@ namespace BYTools.EnvTimeline
         [Header("ReflectionProbe 烘焙参与模型")]
         [Tooltip("烘焙此节点时，将这些 GameObject 及其递归所有子物体临时勾选 ReflectionProbeStatic 以参与烘焙，烘焙结束后自动还原。")]
         public List<GameObject> reflectionProbeBakeTargets = new List<GameObject>();
+
+        [Header("混合区域（过渡到此节点时生效）")]
+        [Tooltip("定义从前一个节点过渡到此节点时的混合区域。\n" +
+                 "混合区域内才开始 SH/LightProbe 混合和 Probe 切换。")]
+        public BlendZone blendZone = new BlendZone();
 
         [Header("烘焙参数")]
         public int sampleResolution = 64;

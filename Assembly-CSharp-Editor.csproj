@@ -51,9 +51,10 @@
   </PropertyGroup>
   <ItemGroup>
      <Compile Include="Assets\ComfyUIBridge\Editor\ComfyUIBridgeEditorWindow.cs" />
-     <Compile Include="Assets\EnvTimeSimple\Editor\EnvironmentTimelineControllerEditor.cs" />
-     <Compile Include="Assets\EnvTimeSimple\Editor\EnvironmentTimelineEditorWindow.cs" />
-     <Compile Include="Assets\EnvTimeSimple\Editor\EnvironmentTimelinePlayableAssetEditor.cs" />
+     <Compile Include="Assets\EnvTimeSimple\Editor\EnvTimelineSimpleControllerEditor.cs" />
+     <Compile Include="Assets\EnvTimeSimple\Editor\EnvTimelineSimpleEditorWindow.cs" />
+     <Compile Include="Assets\EnvTimeSimple\Editor\EnvTimelineSimplePlayableAssetEditor.cs" />
+     <Compile Include="Assets\EnvTimeSimple\Editor\EnvironmentTimelineClipEditor.cs" />
  <Reference Include="UnityEditor.TestRunner">
  <HintPath>I:/2019Program/Unity2019PrgToolDev/Library/ScriptAssemblies/UnityEditor.TestRunner.dll</HintPath>
  </Reference>

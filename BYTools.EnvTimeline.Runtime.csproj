@@ -50,12 +50,12 @@
     <ImplicitlyExpandDesignTimeFacades>false</ImplicitlyExpandDesignTimeFacades>
   </PropertyGroup>
   <ItemGroup>
-     <Compile Include="Assets\EnvTime\EnvironmentTimelineController.cs" />
-     <Compile Include="Assets\EnvTime\EnvironmentTimelineData.cs" />
-     <Compile Include="Assets\EnvTime\EnvironmentTimelinePlayableAsset.cs" />
-     <Compile Include="Assets\EnvTime\EnvironmentTimelinePlayableBehaviour.cs" />
-     <Compile Include="Assets\EnvTime\EnvironmentTimelineTrack.cs" />
-     <Compile Include="Assets\EnvTime\EnvironmentTimelineTrackMixer.cs" />
+     <Compile Include="Assets\EnvTime\EnvironmentTimelineProController.cs" />
+     <Compile Include="Assets\EnvTime\EnvironmentTimelineProData.cs" />
+     <Compile Include="Assets\EnvTime\EnvironmentTimelineProPlayableAsset.cs" />
+     <Compile Include="Assets\EnvTime\EnvironmentTimelineProPlayableBehaviour.cs" />
+     <Compile Include="Assets\EnvTime\EnvironmentTimelineProTrack.cs" />
+     <Compile Include="Assets\EnvTime\EnvironmentTimelineProTrackMixer.cs" />
      <Compile Include="Assets\EnvTime\SHRotation.cs" />
      <Compile Include="Assets\EnvTime\TetrahedralInterpolator.cs" />
      <None Include="Assets\EnvTime\BYTools.EnvTimeline.Runtime.asmdef" />

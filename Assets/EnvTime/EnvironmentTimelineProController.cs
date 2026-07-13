@@ -148,7 +148,12 @@ namespace BYTools.EnvTimeline
             EnvTimeNode from, to; float t;
             if (!timelineData.Sample(currentTime, out from, out to, out t)) return;
 
-            SerializedSH lerpedSH = SerializedSH.Lerp(from.customSH, to.customSH, t);
+            // ★ BlendZone：使用 to 节点的混合区域设置来计算混合权重
+            BlendZone bz = to != null ? to.blendZone : null;
+            float shT = bz != null ? bz.EvaluateSHBlend(t) : t;
+            float probeBlend = bz != null ? bz.EvaluateProbeBlend(t) : (t >= 0.5f ? 1f : 0f);
+
+            SerializedSH lerpedSH = SerializedSH.Lerp(from.customSH, to.customSH, shT);
 
             if (writeToRenderSettings && lerpedSH.IsValid)
             {
@@ -159,14 +164,15 @@ namespace BYTools.EnvTimeline
             {
                 Cubemap fromCube = from.GetMainCubemap();
                 Cubemap toCube   = to.GetMainCubemap();
-                Cubemap mainCube = (t < 0.5f) ? (fromCube ?? toCube) : (toCube ?? fromCube);
+                // ★ Cubemap 跟随 Probe 切换点选择
+                Cubemap mainCube = (probeBlend < 0.5f) ? (fromCube ?? toCube) : (toCube ?? fromCube);
 
-                ApplyMPBForNode(from, to, t, lerpedSH, mainCube);
+                ApplyMPBForNode(from, to, shT, lerpedSH, mainCube);
             }
 
             if (controlReflectionProbes)
             {
-                UpdateProbeActivation(from, to, t);
+                UpdateProbeActivation(from, to, t, bz);
             }
 
             // 🆕 Light Probe 全局混合（写入 LightmapSettings.lightProbes）
@@ -175,7 +181,7 @@ namespace BYTools.EnvTimeline
                 if (lightProbeUpdateInterval <= 0f ||
                     Time.realtimeSinceStartup - _lastLightProbeUpdateTime >= lightProbeUpdateInterval)
                 {
-                    ApplyLightProbeBlend(from, to, t);
+                    ApplyLightProbeBlend(from, to, shT);
                     _lastLightProbeUpdateTime = Time.realtimeSinceStartup;
                 }
             }
@@ -746,16 +752,40 @@ namespace BYTools.EnvTimeline
             }
         }
 
-        void UpdateProbeActivation(EnvTimeNode from, EnvTimeNode to, float t)
+        void UpdateProbeActivation(EnvTimeNode from, EnvTimeNode to, float t, BlendZone bz)
         {
-            // shader 不支持反射球融合，不需要同时打开两边的探针。
-            // 过渡中 t < 0.5 时保持 from 的探针，越过 50% 后切换为 to 的探针。
-            EnvTimeNode activeNode = (from == to || t < 0.5f) ? from : to;
+            if (from == to)
+            {
+                _nextActiveProbes.Clear();
+                if (from != null && from.mainProbe)
+                    _nextActiveProbes.Add(from.mainProbe);
+            }
+            else
+            {
+                // ★ BlendZone：根据混合区域设置决定 Probe 切换
+                float probeBlend = bz != null ? bz.EvaluateProbeBlend(t) : (t >= 0.5f ? 1f : 0f);
+                bool useToProbe = bz != null ? bz.ShouldSwitchProbe(t) : (t >= 0.5f);
+                float smoothW = bz != null && bz.enabled
+                    ? Mathf.Clamp01(bz.probeSwitchSmoothWidth) : 0f;
 
-            _nextActiveProbes.Clear();
-            // shader 不支持反射球融合，同一时间只激活一个 mainProbe
-            if (activeNode != null && activeNode.mainProbe)
-                _nextActiveProbes.Add(activeNode.mainProbe);
+                _nextActiveProbes.Clear();
+
+                if (smoothW > 0.001f && probeBlend > 0f && probeBlend < 1f)
+                {
+                    // 平滑过渡期间：同时激活两个 Probe
+                    if (from != null && from.mainProbe)
+                        _nextActiveProbes.Add(from.mainProbe);
+                    if (to != null && to.mainProbe)
+                        _nextActiveProbes.Add(to.mainProbe);
+                }
+                else
+                {
+                    // 硬切换：只激活一个 Probe
+                    EnvTimeNode activeNode = useToProbe ? to : from;
+                    if (activeNode != null && activeNode.mainProbe)
+                        _nextActiveProbes.Add(activeNode.mainProbe);
+                }
+            }
 
             foreach (var p in _currentActiveProbes)
             {
