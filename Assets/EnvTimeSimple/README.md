@@ -18,7 +18,8 @@
   - [打开方式](#打开方式)
   - [界面说明](#界面说明)
   - [烘焙流程](#烘焙流程)
-  - [ReflectionProbe 烘焙参与模型](#reflectionprobe-烘焙参与模型)
+  - [镜面高光烘焙（Specular Light Baking）](#镜面高光烘焙specular-light-baking)
+- [ReflectionProbe 烘焙参与模型](#reflectionprobe-烘焙参与模型)
 - [运行时行为](#运行时行为)
 - [Shader 要求](#shader-要求)
 - [API 速查](#api-速查)
@@ -103,6 +104,12 @@
 | **影响目标** | `affectedTargets` | 运行时应用 SH 的 GameObject 列表 |
 | | `includeChildren` | 是否包含子物体的 Renderer |
 | **RP 烘焙参与模型** | `reflectionProbeBakeTargets` | 烘焙时临时勾选 ReflectionProbeStatic 的 GO 列表 |
+| **镜面高光烘焙** | `enableSpecularLightBaking` | 启用后在 Baked 光源位置创建自发光代理物体 |
+| | `specularLightCollectMode` | 光源收集模式（AutoBaked/AutoAll/Manual） |
+| | `specularLightTargets` | 手动光源列表（ManualList 模式使用） |
+| | `specularSphereRadius` | 代理球半径（Point/Spot 光源） |
+| | `specularIntensityMultiplier` | 自发光强度倍率 |
+| | `specularAreaPanelScale` | 面光源面板尺寸倍率 |
 | **烘焙参数** | `sampleResolution` | SH 投影采样分辨率（32/64/128/256） |
 | | `rotationY` | Cubemap Y 轴旋转角度（0-360） |
 | | `useHDRClamp` | 是否启用 HDR Clamp |
@@ -209,6 +216,11 @@
 │    [使用选中填充] [追加] [清空]           │
 │    [GO Field] [✕]                       │
 │    ← 拖拽 GameObject 添加                │
+│  💡 镜面高光烘焙 (Specular Light Baking)  │
+│    启用: [✓]  收集模式: [AutoBaked]      │
+│    代理球半径: [─────●─────] 0.05        │
+│    强度倍率: [─────●─────] 1.0           │
+│    面光源面板倍率: [─────●─────] 1.0      │
 │  🎯 影响的模型                            │
 │    包含子物体: [✓]                       │
 │    [使用选中填充] [追加] [清空]           │
@@ -248,6 +260,49 @@
 - 如果 Probe 已有 Custom 纹理，使用同目录同文件名替换
 - 否则使用 `Baked_001.exr`、`Baked_002.exr`... 递增命名
 - 所有 Probe 烘焙后统一切换为 **Custom 模式**
+
+### 镜面高光烘焙（Specular Light Baking）
+
+Unity 的 Baked 光源在烘焙 ReflectionProbe 时默认不会在 Cubemap 中产生镜面高光。本功能通过在光源位置创建临时自发光代理物体来解决此问题，使 Baked 光源也能在反射球中呈现高光效果。
+
+**原理**：参考 [SpecularProbes](https://github.com/zulubo/SpecularProbes)（Zulubo 开发，用于 Vertigo 2）。
+
+**支持的光源类型与代理物体**：
+
+| 光源类型 | 代理物体 | 说明 |
+|----------|----------|------|
+| Point | 自发光小球 | 在光源位置创建小半径自发光球体 |
+| Spot | 自发光小球 | 在光源位置创建小半径自发光球体 |
+| Area | 自发光半透明面板 | 按光源尺寸创建自发光 Quad 面板 |
+| Disc | 自发光圆盘 | 创建扁平自发光圆盘 |
+
+**光源收集模式**：
+
+| 模式 | 说明 |
+|------|------|
+| `AutoCollectBaked` | 自动收集场景中所有 Baked 模式光源（默认） |
+| `AutoCollectAll` | 自动收集所有光源（含 Mixed 模式） |
+| `ManualList` | 仅使用手动指定的光源列表 |
+
+**配置参数**：
+
+| 参数 | 说明 |
+|------|------|
+| 代理球半径 | Point/Spot 光源自发光球体的半径（0.001~1） |
+| 强度倍率 | 自发光强度倍率（1=与光源一致，>1=更亮） |
+| 面光源面板倍率 | Area 光源面板的尺寸倍率（1=与光源一致） |
+
+**工作流程**：
+
+1. 在节点配置中勾选「启用镜面高光烘焙」
+2. 选择光源收集模式（通常使用 AutoCollectBaked）
+3. 调整代理球半径和强度倍率
+4. 执行烘焙（单节点「🔥 烘焙 Probe」或「▶ 一键烘焙所有节点 SH」）
+5. 系统会自动在烘焙前创建代理物体，烘焙后销毁
+
+> 代理物体使用 `HideAndDontSave` 标志，不会出现在场景中也不会被保存。烘焙完成后自动销毁，包括临时材质。
+
+---
 
 ### ReflectionProbe 烘焙参与模型
 
@@ -428,6 +483,10 @@ MPB 对 SkinnedMeshRenderer 在某些 Unity 版本中可能不生效。开启 Co
 ### Q: 如何让烘焙时不影响场景中的 Static 标记？
 
 使用节点的「ReflectionProbe 烘焙参与模型」功能。添加需要参与的 GO 后，系统会在烘焙时临时勾选 `ReflectionProbeStatic`，烘焙完成后自动还原。
+
+### Q: Baked 光源在反射球中没有高光？
+
+Baked 光源默认不会在 ReflectionProbe Cubemap 中产生镜面高光。启用节点的「镜面高光烘焙」功能，系统会在烘焙时在光源位置创建临时自发光代理物体（Point/Spot → 小球，Area → 面板），烘焙后自动销毁。详见上方「镜面高光烘焙」章节。
 
 ---
 

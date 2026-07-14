@@ -434,6 +434,247 @@ namespace BYTools.EnvTimelineSimple
             }
         }
 
+        // ============================================================
+        // 镜面高光烘焙作用域 (SpecularLightBakeScope)
+        //   烘焙前在 Baked 光源位置创建临时自发光代理物体，
+        //   使 Baked 光源在 Cubemap 中产生镜面高光。
+        //   烘焙后（Dispose）自动销毁所有代理物体。
+        //   原理：github.com/zulubo/SpecularProbes
+        // ============================================================
+        struct SpecularLightBakeScope : IDisposable
+        {
+            List<GameObject> _proxies;
+            bool _enabled;
+
+            public static SpecularLightBakeScope Create(EnvTimeNode node)
+            {
+                var scope = new SpecularLightBakeScope();
+                if (node == null || !node.enableSpecularLightBaking)
+                    return scope;
+
+                scope._enabled = true;
+                scope._proxies = new List<GameObject>();
+
+                // 收集光源
+                List<Light> lights = CollectLights(node);
+                if (lights.Count == 0) return scope;
+
+                float radius = Mathf.Max(0.001f, node.specularSphereRadius);
+                float intensityMul = node.specularIntensityMultiplier;
+                float areaScale = node.specularAreaPanelScale;
+
+                foreach (var light in lights)
+                {
+                    if (light == null) continue;
+
+                    GameObject proxy = null;
+                    switch (light.type)
+                    {
+                        case LightType.Point:
+                            proxy = CreateEmissiveSphere(
+                                light.transform.position,
+                                radius,
+                                light.color * intensityMul * light.intensity,
+                                light.gameObject.name + "_SpecProxy");
+                            break;
+
+                        case LightType.Spot:
+                            // 聚光灯：在光源位置放置小球
+                            proxy = CreateEmissiveSphere(
+                                light.transform.position,
+                                radius,
+                                light.color * intensityMul * light.intensity,
+                                light.gameObject.name + "_SpecProxy");
+                            break;
+
+                        case LightType.Area:
+                            // 面光源：创建自发光半透明面板
+                            proxy = CreateEmissivePanel(
+                                light.transform.position,
+                                light.transform.rotation,
+                                light.transform.lossyScale * areaScale,
+                                light.color * intensityMul * light.intensity,
+                                light.gameObject.name + "_SpecPanel");
+                            break;
+
+                        case LightType.Disc:
+                            // 圆盘光源：创建圆形自发光面板
+                            proxy = CreateEmissiveDisc(
+                                light.transform.position,
+                                light.transform.rotation,
+                                radius * 10f * areaScale,
+                                light.color * intensityMul * light.intensity,
+                                light.gameObject.name + "_SpecDisc");
+                            break;
+                    }
+
+                    if (proxy != null)
+                    {
+                        proxy.hideFlags = HideFlags.HideAndDontSave;
+                        scope._proxies.Add(proxy);
+                    }
+                }
+
+                if (scope._proxies.Count > 0)
+                {
+                    Debug.Log($"<color=#FFD700>[EnvTimeline]</color> SpecularLightBakeScope: 创建了 {scope._proxies.Count} 个自发光代理物体");
+                }
+
+                return scope;
+            }
+
+            static List<Light> CollectLights(EnvTimeNode node)
+            {
+                var result = new List<Light>();
+                switch (node.specularLightCollectMode)
+                {
+                    case EnvTimeNode.SpecularLightCollectMode.ManualList:
+                        result.AddRange(node.specularLightTargets);
+                        break;
+
+                    case EnvTimeNode.SpecularLightCollectMode.AutoCollectBaked:
+                        // 自动收集 Baked 模式光源
+                        foreach (var light in Resources.FindObjectsOfTypeAll<Light>())
+                        {
+                            if (light == null) continue;
+                            if (light.lightmapBakeType == LightmapBakeType.Baked)
+                                result.Add(light);
+                        }
+                        break;
+
+                    case EnvTimeNode.SpecularLightCollectMode.AutoCollectAll:
+                        // 自动收集所有光源（含 Mixed）
+                        foreach (var light in Resources.FindObjectsOfTypeAll<Light>())
+                        {
+                            if (light == null) continue;
+                            if (light.lightmapBakeType == LightmapBakeType.Baked ||
+                                light.lightmapBakeType == LightmapBakeType.Mixed)
+                                result.Add(light);
+                        }
+                        break;
+                }
+                return result;
+            }
+
+            /// <summary>
+            /// 创建自发光小球体（用于 Point/Spot 光源）
+            /// </summary>
+            static GameObject CreateEmissiveSphere(Vector3 pos, float radius,
+                Color emissiveColor, string name)
+            {
+                var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                go.name = name;
+                go.transform.position = pos;
+                go.transform.localScale = Vector3.one * (radius * 2f);
+
+                // 确保有 MeshRenderer
+                var mr = go.GetComponent<MeshRenderer>();
+                if (mr == null) mr = go.AddComponent<MeshRenderer>();
+
+                // 使用自发光材质（HDR 颜色）
+                var mat = new Material(Shader.Find("Standard"));
+                mat.EnableKeyword("_EMISSION");
+                mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
+                mat.SetColor("_Color", Color.black);
+                mat.SetColor("_EmissionColor", emissiveColor);
+                mr.sharedMaterial = mat;
+
+                return go;
+            }
+
+            /// <summary>
+            /// 创建自发光半透明面板（用于 Area 光源）
+            /// </summary>
+            static GameObject CreateEmissivePanel(Vector3 pos, Quaternion rot,
+                Vector3 scale, Color emissiveColor, string name)
+            {
+                var go = GameObject.CreatePrimitive(PrimitiveType.Quad);
+                go.name = name;
+                go.transform.position = pos;
+                go.transform.rotation = rot;
+                // Quad 默认 1x1，按光源 scale 缩放
+                go.transform.localScale = new Vector3(
+                    Mathf.Max(0.01f, scale.x),
+                    Mathf.Max(0.01f, scale.y),
+                    1f);
+
+                var mr = go.GetComponent<MeshRenderer>();
+                if (mr == null) mr = go.AddComponent<MeshRenderer>();
+
+                var mat = new Material(Shader.Find("Standard"));
+                mat.EnableKeyword("_EMISSION");
+                mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
+                mat.SetColor("_Color", Color.black);
+                mat.SetColor("_EmissionColor", emissiveColor);
+                // 半透明
+                mat.SetOverrideTag("RenderType", "Transparent");
+                mat.SetFloat("_Mode", 3); // Transparent
+                mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                mat.SetInt("_ZWrite", 0);
+                mat.renderQueue = 3000;
+                mr.sharedMaterial = mat;
+
+                return go;
+            }
+
+            /// <summary>
+            /// 创建自发光圆盘（用于 Disc 光源）
+            /// </summary>
+            static GameObject CreateEmissiveDisc(Vector3 pos, Quaternion rot,
+                float radius, Color emissiveColor, string name)
+            {
+                var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                go.name = name;
+                go.transform.position = pos;
+                go.transform.rotation = rot;
+                // 扁平化为圆盘
+                go.transform.localScale = new Vector3(radius * 2f, radius * 2f, 0.01f);
+
+                var mr = go.GetComponent<MeshRenderer>();
+                if (mr == null) mr = go.AddComponent<MeshRenderer>();
+
+                var mat = new Material(Shader.Find("Standard"));
+                mat.EnableKeyword("_EMISSION");
+                mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
+                mat.SetColor("_Color", Color.black);
+                mat.SetColor("_EmissionColor", emissiveColor);
+                mat.SetOverrideTag("RenderType", "Transparent");
+                mat.SetFloat("_Mode", 3);
+                mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                mat.SetInt("_ZWrite", 0);
+                mat.renderQueue = 3000;
+                mr.sharedMaterial = mat;
+
+                return go;
+            }
+
+            public void Dispose()
+            {
+                if (!_enabled) return;
+
+                if (_proxies != null)
+                {
+                    foreach (var go in _proxies)
+                    {
+                        if (go != null)
+                        {
+                            // 销毁临时材质
+                            var mr = go.GetComponent<MeshRenderer>();
+                            if (mr != null && mr.sharedMaterial != null)
+                                DestroyImmediate(mr.sharedMaterial);
+                            // 销毁碰撞体（PrimitiveType 自带）
+                            var col = go.GetComponent<Collider>();
+                            if (col != null) DestroyImmediate(col);
+                            DestroyImmediate(go);
+                        }
+                    }
+                    _proxies.Clear();
+                }
+            }
+        }
+
         EnvironmentTimelineData data;
         Vector2 mainScroll;
         int selectedNodeIndex = -1;
@@ -1652,6 +1893,90 @@ namespace BYTools.EnvTimelineSimple
             GUI.Box(bakeDropRect, "← 拖拽 GameObject 添加");
             HandleGODropToList(bakeDropRect, node.reflectionProbeBakeTargets);
 
+            // ---- 镜面高光烘焙 ----
+            EditorGUILayout.Space(6);
+            DrawSectionHeader("镜面高光烘焙 (Specular Light Baking)", CLR_WARN, "💡");
+            EditorGUILayout.HelpBox(
+                "启用后，烘焙 ReflectionProbe 时会在 Baked 光源位置创建临时自发光代理物体（小球/面板），\n" +
+                "使 Baked 光源在 Cubemap 中产生镜面高光。\n" +
+                "Point/Spot 光源 → 自发光小球，Area 光源 → 自发光半透明面板。\n" +
+                "原理参考：github.com/zulubo/SpecularProbes",
+                MessageType.Info);
+
+            node.enableSpecularLightBaking = EditorGUILayout.Toggle(
+                new GUIContent("启用镜面高光烘焙",
+                    "烘焙时在 Baked 光源位置放置自发光代理物体"),
+                node.enableSpecularLightBaking);
+
+            if (node.enableSpecularLightBaking)
+            {
+                EditorGUI.indentLevel++;
+
+                node.specularLightCollectMode = (EnvTimeNode.SpecularLightCollectMode)EditorGUILayout.EnumPopup(
+                    new GUIContent("光源收集模式",
+                        "AutoCollectBaked = 自动收集 Baked 光源\n" +
+                        "AutoCollectAll = 自动收集所有光源（含 Mixed）\n" +
+                        "ManualList = 仅使用下方手动指定的光源"),
+                    node.specularLightCollectMode);
+
+                node.specularSphereRadius = EditorGUILayout.Slider(
+                    new GUIContent("代理球半径",
+                        "Point/Spot 光源的自发光代理球体半径（世界单位）"),
+                    node.specularSphereRadius, 0.001f, 1f);
+
+                node.specularIntensityMultiplier = EditorGUILayout.Slider(
+                    new GUIContent("强度倍率",
+                        "自发光强度倍率（1 = 与光源颜色一致，>1 = 更亮的高光）"),
+                    node.specularIntensityMultiplier, 0.1f, 10f);
+
+                node.specularAreaPanelScale = EditorGUILayout.Slider(
+                    new GUIContent("面光源面板倍率",
+                        "Area 光源自发光面板的尺寸倍率（1 = 与光源实际尺寸一致）"),
+                    node.specularAreaPanelScale, 0.01f, 5f);
+
+                // 手动光源列表（仅 ManualList 模式显示）
+                if (node.specularLightCollectMode == EnvTimeNode.SpecularLightCollectMode.ManualList)
+                {
+                    EditorGUILayout.Space(4);
+                    EditorGUILayout.LabelField("手动指定光源列表:", EditorStyles.miniLabel);
+
+                    EditorGUILayout.BeginHorizontal();
+                    GUI.backgroundColor = CLR_INFO;
+                    if (GUILayout.Button("使用选中物体填充"))
+                    {
+                        Undo.RecordObject(data, "Fill Specular Lights");
+                        node.specularLightTargets.Clear();
+                        foreach (var go in Selection.gameObjects)
+                        {
+                            if (go && go.TryGetComponent<Light>(out var l))
+                                node.specularLightTargets.Add(l);
+                        }
+                    }
+                    GUI.backgroundColor = CLR_ERROR;
+                    if (GUILayout.Button("清空", GUILayout.Width(50)))
+                    {
+                        node.specularLightTargets.Clear();
+                    }
+                    GUI.backgroundColor = Color.white;
+                    EditorGUILayout.EndHorizontal();
+
+                    int rmLight = -1;
+                    for (int i = 0; i < node.specularLightTargets.Count; i++)
+                    {
+                        EditorGUILayout.BeginHorizontal();
+                        node.specularLightTargets[i] = (Light)EditorGUILayout.ObjectField(
+                            node.specularLightTargets[i], typeof(Light), true);
+                        GUI.backgroundColor = CLR_ERROR;
+                        if (GUILayout.Button("✕", GUILayout.Width(22))) rmLight = i;
+                        GUI.backgroundColor = Color.white;
+                        EditorGUILayout.EndHorizontal();
+                    }
+                    if (rmLight >= 0) node.specularLightTargets.RemoveAt(rmLight);
+                }
+
+                EditorGUI.indentLevel--;
+            }
+
             EditorGUILayout.Space(6);
             DrawSectionHeader($"影响的模型 ({node.affectedTargets.Count})", CLR_INFO, "🎯");
             node.includeChildren = EditorGUILayout.Toggle("包含子物体", node.includeChildren);
@@ -2162,6 +2487,7 @@ namespace BYTools.EnvTimelineSimple
 
             bool bakeSuccess;
             using (ReflectionProbeStaticScope.Create(node.reflectionProbeBakeTargets))
+            using (SpecularLightBakeScope.Create(node))
             {
                 bakeSuccess = Lightmapping.BakeReflectionProbe(probe, filename);
             }

@@ -311,6 +311,40 @@ namespace Hotfix.Core.EnvTimelineSimple
         public float hdrClampMax = 5f;
         public float exposure = 1f;
 
+        [Header("镜面高光烘焙（Specular Light Baking）")]
+        [Tooltip("启用后，烘焙 ReflectionProbe 时会在 Baked 光源位置创建临时自发光代理物体，\n" +
+                 "使 Baked 光源在 Cubemap 中产生镜面高光。\n" +
+                 "原理类似 SpecularProbes（github.com/zulubo/SpecularProbes）。")]
+        public bool enableSpecularLightBaking = false;
+
+        public enum SpecularLightCollectMode
+        {
+            [Tooltip("自动收集场景中所有 Baked 模式的光源")]
+            AutoCollectBaked,
+            [Tooltip("自动收集场景中所有光源（含 Mixed）")]
+            AutoCollectAll,
+            [Tooltip("仅使用下方手动指定的光源列表")]
+            ManualList,
+        }
+
+        [Tooltip("光源收集模式")]
+        public SpecularLightCollectMode specularLightCollectMode = SpecularLightCollectMode.AutoCollectBaked;
+
+        [Tooltip("手动指定需要烘焙镜面高光的光源列表（ManualList 模式使用）")]
+        public List<Light> specularLightTargets = new List<Light>();
+
+        [Range(0.001f, 1f)]
+        [Tooltip("点光源 / 聚光灯的自发光代理球体半径（世界单位）")]
+        public float specularSphereRadius = 0.05f;
+
+        [Tooltip("自发光强度倍率（1 = 与光源颜色一致，>1 = 更亮的高光）")]
+        [Range(0.1f, 10f)]
+        public float specularIntensityMultiplier = 1f;
+
+        [Range(0.01f, 5f)]
+        [Tooltip("面光源自发光面板的尺寸倍率（1 = 与光源实际尺寸一致）")]
+        public float specularAreaPanelScale = 1f;
+
         [Header("半球映射")]
         [Tooltip("启用后，烘焙完 Cubemap 会自动将空半球用实景半球镜像填充。\n" +
                  "适用于场景只有一半有实景的情况。")]
