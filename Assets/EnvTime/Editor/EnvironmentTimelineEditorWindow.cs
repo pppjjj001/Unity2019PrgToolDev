@@ -1,4 +1,4 @@
-// EnvironmentTimelineEditorWindow.cs（MonoBehaviour 适配版 - 全局可滚动 + 视觉强化版）
+﻿// EnvironmentTimelineEditorWindow.cs（MonoBehaviour 适配版 - 全局可滚动 + 视觉强化版）
 #if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
@@ -279,7 +279,7 @@ namespace BYTools.EnvTimeline
                 catch
                 {
                     UnityEngine.Object.DestroyImmediate(rt);
-                    Debug.LogError("[CubemapSHProjector] 无法读取 Cubemap，请开启 Read/Write");
+                    EnvTimeDebug.LogError("[CubemapSHProjector] 无法读取 Cubemap，请开启 Read/Write");
                     return null;
                 }
             }
@@ -623,7 +623,7 @@ namespace BYTools.EnvTimeline
             Undo.RegisterCreatedObjectUndo(go, "Create Timeline");
             Selection.activeGameObject = go;
 
-            Debug.Log($"[EnvTimeline] 已创建新的 Timeline 物体: {go.name}");
+            EnvTimeDebug.Log($"[EnvTimeline] 已创建新的 Timeline 物体: {go.name}");
         }
 
         bool IsProbeUsedByOtherNode(ReflectionProbe probe, int excludeIndex, out int usedByIndex)
@@ -1277,7 +1277,7 @@ namespace BYTools.EnvTimeline
             }
             else
             {
-                Debug.LogWarning($"物体 '{data.gameObject.name}' 上未找到 EnvironmentTimelineController 组件");
+                EnvTimeDebug.LogWarning($"物体 '{data.gameObject.name}' 上未找到 EnvironmentTimelineController 组件");
             }
         }
 
@@ -1437,7 +1437,7 @@ namespace BYTools.EnvTimeline
                     Undo.RecordObject(data, "Capture LightProbes");
                     node.lightProbeData = LightProbeSnapshot.CaptureCurrent();
                     EditorUtility.SetDirty(data);
-                    Debug.Log($"[EnvTimeline] 节点 [{node.nodeName}] 已捕获 {node.lightProbeData.ProbeCount} 个 LightProbe");
+                    EnvTimeDebug.Log($"[EnvTimeline] 节点 [{node.nodeName}] 已捕获 {node.lightProbeData.ProbeCount} 个 LightProbe");
                 }
             }
 
@@ -1916,7 +1916,7 @@ namespace BYTools.EnvTimeline
                         debugSampleRenderer.SetPropertyBlock(mpb);
 
                         SceneView.RepaintAll();
-                        Debug.Log($"[EnvTimeline] 已将采样 SH 写入 Renderer '{debugSampleRenderer.name}' 的 MPB");
+                        EnvTimeDebug.Log($"[EnvTimeline] 已将采样 SH 写入 Renderer '{debugSampleRenderer.name}' 的 MPB");
                     }
                 }
             }
@@ -2251,14 +2251,14 @@ void BakeLightProbesOnlyWithConfirm()
             Texture tex = CreateDefaultCubeTexture(saveFolder, cubemapName);
             if (tex == null)
             {
-                Debug.LogError($"[EnvTimeline] 无法为 '{node.mainProbe.name}' 创建 Cubemap 图片");
+                EnvTimeDebug.LogError($"[EnvTimeline] 无法为 '{node.mainProbe.name}' 创建 Cubemap 图片");
                 return false;
             }
 
             node.mainProbe.customBakedTexture = tex;
             EditorUtility.SetDirty(node.mainProbe);
 
-            Debug.Log($"[EnvTimeline] 为 Probe '{node.mainProbe.name}' 创建 Cubemap 图片: {AssetDatabase.GetAssetPath(tex)}");
+            EnvTimeDebug.Log($"[EnvTimeline] 为 Probe '{node.mainProbe.name}' 创建 Cubemap 图片: {AssetDatabase.GetAssetPath(tex)}");
             return true;
         }
 
@@ -2334,7 +2334,7 @@ void BakeLightProbesOnlyWithConfirm()
                 cube, node.sampleResolution, node.rotationY, clamp);
             if (coeffs == null)
             {
-                Debug.LogError("[EnvTimeline] SH 投影失败：" + cube.name);
+                EnvTimeDebug.LogError("[EnvTimeline] SH 投影失败：" + cube.name);
                 return;
             }
 
@@ -2358,7 +2358,7 @@ void BakeLightProbesOnlyWithConfirm()
             node.customSH.SHC  = cc;
             EditorUtility.SetDirty(data);
 
-            Debug.Log($"<color=#7CFC00>[EnvTimeline]</color> 节点 [{node.nodeName}] SH 烘焙完成 (来自 Probe '{node.mainProbe.name}')");
+            EnvTimeDebug.Log($"<color=#7CFC00>[EnvTimeline]</color> 节点 [{node.nodeName}] SH 烘焙完成 (来自 Probe '{node.mainProbe.name}')");
         }
 
         // ============================================================
@@ -2415,7 +2415,7 @@ void BakeLightProbesOnlyWithConfirm()
                         $"为 '{probe.name}' ({originalMode}) 选择烘焙保存目录",
                         out string bakeFolder))
                 {
-                    Debug.Log("[EnvTimeline] 已取消烘焙");
+                    EnvTimeDebug.Log("[EnvTimeline] 已取消烘焙");
                     return;
                 }
                 int bakedFileIndex = GetNextBakedFileIndex(bakeFolder);
@@ -2462,15 +2462,15 @@ void BakeLightProbesOnlyWithConfirm()
                     {
                         probe.customBakedTexture = processedCube;
                         EditorUtility.SetDirty(probe);
-                        Debug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {filename} (角度: {node.hemisphereAngle}°)");
+                        EnvTimeDebug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {filename} (角度: {node.hemisphereAngle}°)");
                     }
                     else
                     {
-                        Debug.LogWarning($"[EnvTimeline] 半球映射处理失败: {filename}");
+                        EnvTimeDebug.LogWarning($"[EnvTimeline] 半球映射处理失败: {filename}");
                     }
                 }
 
-                Debug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
+                EnvTimeDebug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
                 EditorUtility.DisplayDialog("✓ Probe 烘焙完成",
                     $"已烘焙 '{probe.name}'\n保存到: {filename}\n已切换为 Custom 模式", "确定");
             }
@@ -2478,7 +2478,7 @@ void BakeLightProbesOnlyWithConfirm()
             {
                 // 烘焙失败：恢复原始模式
                 probe.mode = originalMode;
-                Debug.LogError("[EnvTimeline] Probe 烘焙失败");
+                EnvTimeDebug.LogError("[EnvTimeline] Probe 烘焙失败");
                 EditorUtility.DisplayDialog("错误", "Probe 烘焙失败，请查看 Console", "确定");
             }
         }
@@ -2524,7 +2524,7 @@ void BakeLightProbesOnlyWithConfirm()
             }
             else if (selfContainedNodes.Count > 0)
             {
-                Debug.Log($"[EnvTimeline] {selfContainedNodes.Count} 个节点的 Probe 自带 Cubemap，跳过 Probe 烘焙，仅烘焙 SH");
+                EnvTimeDebug.Log($"[EnvTimeline] {selfContainedNodes.Count} 个节点的 Probe 自带 Cubemap，跳过 Probe 烘焙，仅烘焙 SH");
             }
 
             // 检查是否有需要用户选择目录的节点
@@ -2546,7 +2546,7 @@ void BakeLightProbesOnlyWithConfirm()
                         $"选择烘焙保存目录 (需烘焙 {needsBake.Count} 个 Probe，最终保存为 Custom 模式)",
                         out defaultFolder))
                 {
-                    Debug.Log("[EnvTimeline] 用户取消了操作");
+                    EnvTimeDebug.Log("[EnvTimeline] 用户取消了操作");
                     return;
                 }
             }
@@ -2617,24 +2617,24 @@ void BakeLightProbesOnlyWithConfirm()
                         {
                             probe.customBakedTexture = processedCube;
                             EditorUtility.SetDirty(probe);
-                            Debug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {filename} (角度: {node.hemisphereAngle}°)");
+                            EnvTimeDebug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {filename} (角度: {node.hemisphereAngle}°)");
                         }
                     }
                     bakeOk++;
-                    Debug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
+                    EnvTimeDebug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
                 }
                 else
                 {
                     // 烘焙失败：恢复原始模式
                     probe.mode = originalMode;
                     bakeFail++;
-                    Debug.LogError($"[EnvTimeline] Probe 烘焙失败: {probe.name}");
+                    EnvTimeDebug.LogError($"[EnvTimeline] Probe 烘焙失败: {probe.name}");
                 }
             }
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
             EditorUtility.ClearProgressBar();
-            Debug.Log($"[EnvTimeline] 已烘焙 {bakeOk} 个 Probe (失败 {bakeFail})，所有 Probe 已切换为 Custom 模式");
+            EnvTimeDebug.Log($"[EnvTimeline] 已烘焙 {bakeOk} 个 Probe (失败 {bakeFail})，所有 Probe 已切换为 Custom 模式");
 
             // ---- 烘焙所有节点 SH ----
             int ok = 0, fail = 0;
@@ -2687,7 +2687,7 @@ void BakeLightProbesOnlyWithConfirm()
         {
             if (string.IsNullOrEmpty(exrPath) || !File.Exists(exrPath))
             {
-                Debug.LogError($"[EnvTimeline] EXR 文件不存在: {exrPath}");
+                EnvTimeDebug.LogError($"[EnvTimeline] EXR 文件不存在: {exrPath}");
                 return null;
             }
 
@@ -2719,7 +2719,7 @@ void BakeLightProbesOnlyWithConfirm()
             Cubemap sourceCube = AssetDatabase.LoadAssetAtPath<Cubemap>(exrPath);
             if (sourceCube == null)
             {
-                Debug.LogError($"[EnvTimeline] 无法加载 Cubemap: {exrPath}");
+                EnvTimeDebug.LogError($"[EnvTimeline] 无法加载 Cubemap: {exrPath}");
                 return null;
             }
 
@@ -2794,7 +2794,7 @@ void BakeLightProbesOnlyWithConfirm()
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"[EnvTimeline] EXR 编码失败: {e.Message}");
+                EnvTimeDebug.LogError($"[EnvTimeline] EXR 编码失败: {e.Message}");
                 Object.DestroyImmediate(stripTex);
                 return null;
             }
@@ -2802,7 +2802,7 @@ void BakeLightProbesOnlyWithConfirm()
 
             if (exrBytes == null || exrBytes.Length == 0)
             {
-                Debug.LogError("[EnvTimeline] EXR 编码返回空数据");
+                EnvTimeDebug.LogError("[EnvTimeline] EXR 编码返回空数据");
                 return null;
             }
 
@@ -2959,7 +2959,7 @@ void BakeLightProbesOnlyWithConfirm()
                     node.mainProbe.bakedTexture = processed;
                 EditorUtility.SetDirty(node.mainProbe);
 
-                Debug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {cubePath} (角度: {node.hemisphereAngle}°)");
+                EnvTimeDebug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {cubePath} (角度: {node.hemisphereAngle}°)");
                 EditorUtility.DisplayDialog("✓ 处理完成",
                     $"半球映射处理完成\n文件: {cubePath}\n角度: {node.hemisphereAngle}°", "确定");
             }
@@ -3077,7 +3077,7 @@ void BakeLightProbesOnlyWithConfirm()
                         ? SceneView.lastActiveSceneView.camera.transform.position
                         : Vector3.zero;
                 placementPreviewPositions = LightProbePlacementUtility.PreviewPositions(placementSettings, origin);
-                Debug.Log($"[ProbePlacement] 预览生成 {placementPreviewPositions.Length} 个位置");
+                EnvTimeDebug.Log($"[ProbePlacement] 预览生成 {placementPreviewPositions.Length} 个位置");
                 SceneView.RepaintAll();
             }
 

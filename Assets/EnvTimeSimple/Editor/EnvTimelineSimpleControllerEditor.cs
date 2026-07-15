@@ -4,7 +4,7 @@ using UnityEditor;
 using UnityEngine;
 using Hotfix.Core.EnvTimelineSimple;
 
-namespace BYTools.EnvTimelineSimple
+namespace UnityEditor.EnvTimelineSimple
 {
     [CustomEditor(typeof(EnvironmentTimelineController))]
     public class EnvTimelineSimpleControllerEditor : Editor

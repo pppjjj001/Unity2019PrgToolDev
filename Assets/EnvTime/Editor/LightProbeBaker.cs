@@ -1,4 +1,4 @@
-﻿// LightProbeBaker.cs - 仅烘焙 LightProbe (Unity 2019 兼容)
+﻿﻿// LightProbeBaker.cs - 仅烘焙 LightProbe (Unity 2019 兼容)
 #if UNITY_EDITOR
 using System.Collections;
 using UnityEditor;
@@ -16,7 +16,7 @@ namespace BYTools.EnvTimeline
         {
             if (Lightmapping.isRunning)
             {
-                Debug.LogWarning("[LightProbeBaker] 已有烘焙正在进行，请先取消");
+                EnvTimeDebug.LogWarning("[LightProbeBaker] 已有烘焙正在进行，请先取消");
                 return false;
             }
 
@@ -46,19 +46,18 @@ namespace BYTools.EnvTimeline
                 // 关闭 ReflectionProbe 自动烘焙影响
                 Lightmapping.giWorkflowMode = Lightmapping.GIWorkflowMode.OnDemand;
 
-                Debug.Log("[LightProbeBaker] 开始烘焙 LightProbe...");
+                EnvTimeDebug.Log("[LightProbeBaker] 开始烘焙 LightProbe...");
 
                 // 同步烘焙
                 bool success = Lightmapping.Bake();
 
                 if (success)
                 {
-                    Debug.Log($"<color=#7CFC00>[LightProbeBaker]</color> LightProbe 烘焙完成，共 " +
-                              $"{(LightmapSettings.lightProbes != null ? LightmapSettings.lightProbes.count : 0)} 个 Probe");
+                    EnvTimeDebug.LogColor($"LightProbe 烘焙完成，共 {(LightmapSettings.lightProbes != null ? LightmapSettings.lightProbes.count : 0)} 个 Probe", "#7CFC00");
                 }
                 else
                 {
-                    Debug.LogError("[LightProbeBaker] 烘焙失败");
+                    EnvTimeDebug.LogError("[LightProbeBaker] 烘焙失败");
                 }
 
                 return success;

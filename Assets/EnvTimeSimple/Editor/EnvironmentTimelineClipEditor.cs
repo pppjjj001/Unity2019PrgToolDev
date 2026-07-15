@@ -8,7 +8,7 @@ using UnityEngine.Playables;
 using UnityEngine.Timeline;
 using Hotfix.Core.EnvTimelineSimple;
 
-namespace BYTools.EnvTimelineSimple
+namespace UnityEditor.EnvTimelineSimple
 {
     /// <summary>
     /// 自定义 Timeline Clip 编辑器：在 Clip 背景上绘制环境时间节点的位置标记。

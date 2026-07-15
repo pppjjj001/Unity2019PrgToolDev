@@ -1,4 +1,4 @@
-// EnvironmentTimelineControllerEditor.cs
+﻿// EnvironmentTimelineControllerEditor.cs
 // 重写版：分组折叠 Inspector + 自定义 LightProbe 采样调试面板 + OnSceneGUI 联动
 #if UNITY_EDITOR
 using UnityEditor;
@@ -412,7 +412,7 @@ namespace BYTools.EnvTimeline
             r.SetPropertyBlock(mpb);
 
             SceneView.RepaintAll();
-            Debug.Log($"[EnvTimeline] 已将采样 SH 写入 Renderer '{r.name}' 的 MPB");
+            EnvTimeDebug.Log($"[EnvTimeline] 已将采样 SH 写入 Renderer '{r.name}' 的 MPB");
         }
 
         // ============================================================

@@ -7,7 +7,7 @@ using UnityEngine.Timeline;
 using UnityEditor.Timeline;
 using Hotfix.Core.EnvTimelineSimple;
 
-namespace BYTools.EnvTimelineSimple
+namespace UnityEditor.EnvTimelineSimple
 {
     [CustomEditor(typeof(EnvironmentTimelinePlayableAsset))]
     public class EnvTimelineSimplePlayableAssetEditor : Editor

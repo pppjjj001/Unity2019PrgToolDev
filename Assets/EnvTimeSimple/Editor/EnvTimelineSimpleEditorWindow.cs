@@ -1,4 +1,4 @@
-// EnvironmentTimelineEditorWindow.cs（MonoBehaviour 适配版 - 全局可滚动 + 视觉强化版）
+﻿// EnvironmentTimelineEditorWindow.cs（MonoBehaviour 适配版 - 全局可滚动 + 视觉强化版）
 #if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
@@ -10,7 +10,7 @@ using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
 using Hotfix.Core.EnvTimelineSimple;
 
-namespace BYTools.EnvTimelineSimple
+namespace UnityEditor.EnvTimelineSimple
 {
     // ================================================================
     // Cubemap → SH L2 (9 系数) CPU 端积分器
@@ -310,7 +310,7 @@ namespace BYTools.EnvTimelineSimple
                 catch
                 {
                     UnityEngine.Object.DestroyImmediate(rt);
-                    Debug.LogError("[CubemapSHProjector] 无法读取 Cubemap，请开启 Read/Write");
+                    EnvTimeSimpleDebug.LogError("[CubemapSHProjector] 无法读取 Cubemap，请开启 Read/Write");
                     return null;
                 }
             }
@@ -488,13 +488,14 @@ namespace BYTools.EnvTimelineSimple
                             break;
 
                         case LightType.Area:
-                            // 面光源：创建自发光半透明面板
+                            // 面光源：创建自发光面板（支持 Cookie）
                             proxy = CreateEmissivePanel(
                                 light.transform.position,
                                 light.transform.rotation,
-                                light.transform.lossyScale * areaScale,
+                                new Vector3(light.areaSize.x, light.areaSize.y, 1f) * areaScale,
                                 light.color * intensityMul * light.intensity,
-                                light.gameObject.name + "_SpecPanel");
+                                light.gameObject.name + "_SpecPanel",
+                                light.cookie);
                             break;
 
                         case LightType.Disc:
@@ -511,19 +512,24 @@ namespace BYTools.EnvTimelineSimple
                     if (proxy != null)
                     {
                         proxy.hideFlags = HideFlags.HideAndDontSave;
+                        // 代理物体需要勾选 ReflectionProbeStatic，
+                        // 确保烘焙 ReflectionProbe 时被正确纳入
+                        var flags = GameObjectUtility.GetStaticEditorFlags(proxy);
+                        GameObjectUtility.SetStaticEditorFlags(
+                            proxy, flags | StaticEditorFlags.ReflectionProbeStatic);
                         scope._proxies.Add(proxy);
                     }
                 }
 
                 if (scope._proxies.Count > 0)
                 {
-                    Debug.Log($"<color=#FFD700>[EnvTimeline]</color> SpecularLightBakeScope: 创建了 {scope._proxies.Count} 个自发光代理物体");
+                    EnvTimeSimpleDebug.Log($"<color=#FFD700>[EnvTimeline]</color> SpecularLightBakeScope: 创建了 {scope._proxies.Count} 个自发光代理物体");
                 }
 
                 return scope;
             }
 
-            static List<Light> CollectLights(EnvTimeNode node)
+            public static List<Light> CollectLights(EnvTimeNode node)
             {
                 var result = new List<Light>();
                 switch (node.specularLightCollectMode)
@@ -559,7 +565,7 @@ namespace BYTools.EnvTimelineSimple
             /// <summary>
             /// 创建自发光小球体（用于 Point/Spot 光源）
             /// </summary>
-            static GameObject CreateEmissiveSphere(Vector3 pos, float radius,
+            public static GameObject CreateEmissiveSphere(Vector3 pos, float radius,
                 Color emissiveColor, string name)
             {
                 var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
@@ -583,15 +589,16 @@ namespace BYTools.EnvTimelineSimple
             }
 
             /// <summary>
-            /// 创建自发光半透明面板（用于 Area 光源）
+            /// 创建自发光面板（用于 Area 光源），支持 Cookie 纹理
             /// </summary>
-            static GameObject CreateEmissivePanel(Vector3 pos, Quaternion rot,
-                Vector3 scale, Color emissiveColor, string name)
+            public static GameObject CreateEmissivePanel(Vector3 pos, Quaternion rot,
+                Vector3 scale, Color emissiveColor, string name, Texture cookie = null)
             {
                 var go = GameObject.CreatePrimitive(PrimitiveType.Quad);
                 go.name = name;
                 go.transform.position = pos;
-                go.transform.rotation = rot;
+                // Unity 光源沿 -Z 方向发光，Quad 法线默认 +Z，需翻转 180°
+                go.transform.rotation = rot * Quaternion.Euler(0, 180, 0);
                 // Quad 默认 1x1，按光源 scale 缩放
                 go.transform.localScale = new Vector3(
                     Mathf.Max(0.01f, scale.x),
@@ -606,13 +613,18 @@ namespace BYTools.EnvTimelineSimple
                 mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
                 mat.SetColor("_Color", Color.black);
                 mat.SetColor("_EmissionColor", emissiveColor);
-                // 半透明
+                // Cookie 纹理：作为自发光贴图，使面板呈现 cookie 图案
+                if (cookie != null)
+                    mat.SetTexture("_EmissionMap", cookie);
+                // 半透明模式，Cookie 透明区域不遮挡场景
                 mat.SetOverrideTag("RenderType", "Transparent");
                 mat.SetFloat("_Mode", 3); // Transparent
                 mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
                 mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
                 mat.SetInt("_ZWrite", 0);
                 mat.renderQueue = 3000;
+                // 双面渲染：Quad 默认只渲染正面，Probe 在背面会看不见
+                mat.SetInt("_Cull", 0); // Cull Off
                 mr.sharedMaterial = mat;
 
                 return go;
@@ -621,7 +633,7 @@ namespace BYTools.EnvTimelineSimple
             /// <summary>
             /// 创建自发光圆盘（用于 Disc 光源）
             /// </summary>
-            static GameObject CreateEmissiveDisc(Vector3 pos, Quaternion rot,
+            public static GameObject CreateEmissiveDisc(Vector3 pos, Quaternion rot,
                 float radius, Color emissiveColor, string name)
             {
                 var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
@@ -639,12 +651,12 @@ namespace BYTools.EnvTimelineSimple
                 mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
                 mat.SetColor("_Color", Color.black);
                 mat.SetColor("_EmissionColor", emissiveColor);
-                mat.SetOverrideTag("RenderType", "Transparent");
-                mat.SetFloat("_Mode", 3);
-                mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
-                mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
-                mat.SetInt("_ZWrite", 0);
-                mat.renderQueue = 3000;
+                // 不透明，与其他代理保持一致
+                mat.SetFloat("_Mode", 0); // Opaque
+                mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
+                mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.Zero);
+                mat.SetInt("_ZWrite", 1);
+                mat.renderQueue = -1; // 自动
                 mr.sharedMaterial = mat;
 
                 return go;
@@ -693,6 +705,11 @@ namespace BYTools.EnvTimelineSimple
         bool draggingPreview = false;
         const float PREVIEW_HANDLE_HEIGHT = 50f;
 
+        // 镜面高光代理预览
+        List<GameObject> _specularPreviewObjects;
+        bool _isSpecularPreviewActive = false;
+        int _specularPreviewNodeIndex = -1;
+
         [SerializeField] private int defaultCubemapSize = 128;
         [SerializeField] private string cubemapPrefix = "Baked";
 
@@ -716,6 +733,118 @@ namespace BYTools.EnvTimelineSimple
         {
             var win = GetWindow<EnvTimelineSimpleEditorWindow>("Env Timeline");
             win.minSize = new Vector2(580, 500);
+        }
+
+        void OnDestroy()
+        {
+            ClearSpecularPreview();
+        }
+
+        /// <summary>
+        /// 清除镜面高光代理预览物体（销毁所有临时 GO 和材质）
+        /// </summary>
+        void ClearSpecularPreview()
+        {
+            if (_specularPreviewObjects != null)
+            {
+                foreach (var go in _specularPreviewObjects)
+                {
+                    if (go != null)
+                    {
+                        var mr = go.GetComponent<MeshRenderer>();
+                        if (mr != null && mr.sharedMaterial != null)
+                            DestroyImmediate(mr.sharedMaterial);
+                        var col = go.GetComponent<Collider>();
+                        if (col != null) DestroyImmediate(col);
+                        DestroyImmediate(go);
+                    }
+                }
+                _specularPreviewObjects.Clear();
+            }
+            _isSpecularPreviewActive = false;
+            _specularPreviewNodeIndex = -1;
+            SceneView.RepaintAll();
+        }
+
+        /// <summary>
+        /// 创建镜面高光代理预览物体，复用 SpecularLightBakeScope 的创建方法。
+        /// 物体标记为 HideAndDontSave，不存入场景、不显示在 Hierarchy。
+        /// </summary>
+        void CreateSpecularPreview(EnvTimeNode node, int nodeIndex)
+        {
+            ClearSpecularPreview();
+
+            if (node == null || !node.enableSpecularLightBaking) return;
+
+            var lights = SpecularLightBakeScope.CollectLights(node);
+            if (lights.Count == 0)
+            {
+                EnvTimeSimpleDebug.LogWarning("[EnvTimeline] 预览: 未收集到任何光源，请检查光源配置");
+                return;
+            }
+
+            _specularPreviewObjects = new List<GameObject>();
+            float radius = Mathf.Max(0.001f, node.specularSphereRadius);
+            float intensityMul = node.specularIntensityMultiplier;
+            float areaScale = node.specularAreaPanelScale;
+
+            foreach (var light in lights)
+            {
+                if (light == null) continue;
+
+                GameObject proxy = null;
+                switch (light.type)
+                {
+                    case LightType.Point:
+                        proxy = SpecularLightBakeScope.CreateEmissiveSphere(
+                            light.transform.position, radius,
+                            light.color * intensityMul * light.intensity,
+                            light.gameObject.name + "_SpecProxy");
+                        break;
+
+                    case LightType.Spot:
+                        proxy = SpecularLightBakeScope.CreateEmissiveSphere(
+                            light.transform.position, radius,
+                            light.color * intensityMul * light.intensity,
+                            light.gameObject.name + "_SpecProxy");
+                        break;
+
+                    case LightType.Area:
+                        proxy = SpecularLightBakeScope.CreateEmissivePanel(
+                            light.transform.position, light.transform.rotation,
+                            new Vector3(light.areaSize.x, light.areaSize.y, 1f) * areaScale,
+                            light.color * intensityMul * light.intensity,
+                            light.gameObject.name + "_SpecPanel",
+                            light.cookie);
+                        break;
+
+                    case LightType.Disc:
+                        proxy = SpecularLightBakeScope.CreateEmissiveDisc(
+                            light.transform.position, light.transform.rotation,
+                            radius * 10f * areaScale,
+                            light.color * intensityMul * light.intensity,
+                            light.gameObject.name + "_SpecDisc");
+                        break;
+                }
+
+                if (proxy != null)
+                {
+                    proxy.hideFlags = HideFlags.HideAndDontSave;
+                    _specularPreviewObjects.Add(proxy);
+                }
+            }
+
+            if (_specularPreviewObjects.Count > 0)
+            {
+                _isSpecularPreviewActive = true;
+                _specularPreviewNodeIndex = nodeIndex;
+                EnvTimeSimpleDebug.Log($"<color=#FFD700>[EnvTimeline]</color> 预览: 创建了 {_specularPreviewObjects.Count} 个自发光代理物体（HideAndDontSave，关闭预览或编辑器时自动清理）");
+                SceneView.RepaintAll();
+            }
+            else
+            {
+                EnvTimeSimpleDebug.LogWarning("[EnvTimeline] 预览: 未创建任何代理物体，可能光源类型不支持");
+            }
         }
 
         /// <summary>
@@ -869,7 +998,7 @@ namespace BYTools.EnvTimelineSimple
             Undo.RegisterCreatedObjectUndo(go, "Create Timeline");
             Selection.activeGameObject = go;
 
-            Debug.Log($"[EnvTimeline] 已创建新的 Timeline 物体: {go.name}");
+            EnvTimeSimpleDebug.Log($"[EnvTimeline] 已创建新的 Timeline 物体: {go.name}");
         }
 
         bool IsProbeUsedByOtherNode(ReflectionProbe probe, int excludeIndex, out int usedByIndex)
@@ -1552,7 +1681,7 @@ namespace BYTools.EnvTimelineSimple
             }
             else
             {
-                Debug.LogWarning($"物体 '{data.gameObject.name}' 上未找到 EnvironmentTimelineController 组件");
+                EnvTimeSimpleDebug.LogWarning($"物体 '{data.gameObject.name}' 上未找到 EnvironmentTimelineController 组件");
             }
         }
 
@@ -1650,6 +1779,11 @@ namespace BYTools.EnvTimelineSimple
         void DrawSelectedNodeInspector()
         {
             if (data == null || selectedNodeIndex < 0 || selectedNodeIndex >= data.nodes.Count) return;
+
+            // 切换节点时自动清除上一节点的代理预览
+            if (_isSpecularPreviewActive && selectedNodeIndex != _specularPreviewNodeIndex)
+                ClearSpecularPreview();
+
             var node = data.nodes[selectedNodeIndex];
 
             DrawSectionHeader($"节点详细 [{selectedNodeIndex}] {node.nodeName}", CLR_TITLE, "🔧");
@@ -1942,13 +2076,13 @@ namespace BYTools.EnvTimelineSimple
 
                     EditorGUILayout.BeginHorizontal();
                     GUI.backgroundColor = CLR_INFO;
-                    if (GUILayout.Button("使用选中物体填充"))
+                    if (GUILayout.Button("追加当前选中物体"))
                     {
-                        Undo.RecordObject(data, "Fill Specular Lights");
-                        node.specularLightTargets.Clear();
+                        Undo.RecordObject(data, "Append Specular Lights");
                         foreach (var go in Selection.gameObjects)
                         {
-                            if (go && go.TryGetComponent<Light>(out var l))
+                            if (go && go.TryGetComponent<Light>(out var l)
+                                && !node.specularLightTargets.Contains(l))
                                 node.specularLightTargets.Add(l);
                         }
                     }
@@ -1973,6 +2107,24 @@ namespace BYTools.EnvTimelineSimple
                     }
                     if (rmLight >= 0) node.specularLightTargets.RemoveAt(rmLight);
                 }
+
+                // 预览代理物体
+                EditorGUILayout.Space(4);
+                EditorGUILayout.BeginHorizontal();
+                if (_isSpecularPreviewActive)
+                {
+                    GUI.backgroundColor = CLR_WARN;
+                    if (GUILayout.Button("● 关闭代理预览"))
+                        ClearSpecularPreview();
+                }
+                else
+                {
+                    GUI.backgroundColor = CLR_OK;
+                    if (GUILayout.Button("👁 预览代理物体"))
+                        CreateSpecularPreview(node, selectedNodeIndex);
+                }
+                GUI.backgroundColor = Color.white;
+                EditorGUILayout.EndHorizontal();
 
                 EditorGUI.indentLevel--;
             }
@@ -2261,14 +2413,14 @@ namespace BYTools.EnvTimelineSimple
             Texture tex = CreateDefaultCubeTexture(saveFolder, cubemapName);
             if (tex == null)
             {
-                Debug.LogError($"[EnvTimeline] 无法为 '{node.mainProbe.name}' 创建 Cubemap 图片");
+                EnvTimeSimpleDebug.LogError($"[EnvTimeline] 无法为 '{node.mainProbe.name}' 创建 Cubemap 图片");
                 return false;
             }
 
             node.mainProbe.customBakedTexture = tex;
             EditorUtility.SetDirty(node.mainProbe);
 
-            Debug.Log($"[EnvTimeline] 为 Probe '{node.mainProbe.name}' 创建 Cubemap 图片: {AssetDatabase.GetAssetPath(tex)}");
+            EnvTimeSimpleDebug.Log($"[EnvTimeline] 为 Probe '{node.mainProbe.name}' 创建 Cubemap 图片: {AssetDatabase.GetAssetPath(tex)}");
             return true;
         }
 
@@ -2355,7 +2507,7 @@ namespace BYTools.EnvTimelineSimple
                     cube = AssetDatabase.LoadAssetAtPath<Cubemap>(cubeAssetPath);
                     if (cube == null)
                     {
-                        Debug.LogError("[EnvTimeline] 无法重新加载可读 Cubemap: " + cubeAssetPath);
+                        EnvTimeSimpleDebug.LogError("[EnvTimeline] 无法重新加载可读 Cubemap: " + cubeAssetPath);
                         return;
                     }
                     madeReadable = true;
@@ -2379,7 +2531,7 @@ namespace BYTools.EnvTimelineSimple
 
             if (coeffs == null)
             {
-                Debug.LogError("[EnvTimeline] SH 投影失败：" + cube.name);
+                EnvTimeSimpleDebug.LogError("[EnvTimeline] SH 投影失败：" + cube.name);
                 return;
             }
 
@@ -2390,7 +2542,7 @@ namespace BYTools.EnvTimelineSimple
                     if (Mathf.Abs(coeffs[i, c]) > 1e-8f) allZero = false;
             if (allZero)
             {
-                Debug.LogWarning($"[EnvTimeline] 节点 [{node.nodeName}] SH 烘焙结果全零！Cubemap 可能为纯黑或像素读取失败: {cube.name}");
+                EnvTimeSimpleDebug.LogWarning($"[EnvTimeline] 节点 [{node.nodeName}] SH 烘焙结果全零！Cubemap 可能为纯黑或像素读取失败: {cube.name}");
             }
 
             if (node.exposure != 1f)
@@ -2413,7 +2565,7 @@ namespace BYTools.EnvTimelineSimple
             node.customSH.SHC  = cc;
             EditorUtility.SetDirty(data);
 
-            Debug.Log($"<color=#7CFC00>[EnvTimeline]</color> 节点 [{node.nodeName}] SH 烘焙完成 (来自 Probe '{node.mainProbe.name}')");
+            EnvTimeSimpleDebug.Log($"<color=#7CFC00>[EnvTimeline]</color> 节点 [{node.nodeName}] SH 烘焙完成 (来自 Probe '{node.mainProbe.name}')");
         }
 
         // ============================================================
@@ -2470,7 +2622,7 @@ namespace BYTools.EnvTimelineSimple
                         $"为 '{probe.name}' ({originalMode}) 选择烘焙保存目录",
                         out string bakeFolder))
                 {
-                    Debug.Log("[EnvTimeline] 已取消烘焙");
+                    EnvTimeSimpleDebug.Log("[EnvTimeline] 已取消烘焙");
                     return;
                 }
                 int bakedFileIndex = GetNextBakedFileIndex(bakeFolder);
@@ -2518,15 +2670,15 @@ namespace BYTools.EnvTimelineSimple
                     {
                         probe.customBakedTexture = processedCube;
                         EditorUtility.SetDirty(probe);
-                        Debug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {filename} (角度: {node.hemisphereAngle}°)");
+                        EnvTimeSimpleDebug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {filename} (角度: {node.hemisphereAngle}°)");
                     }
                     else
                     {
-                        Debug.LogWarning($"[EnvTimeline] 半球映射处理失败: {filename}");
+                        EnvTimeSimpleDebug.LogWarning($"[EnvTimeline] 半球映射处理失败: {filename}");
                     }
                 }
 
-                Debug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
+                EnvTimeSimpleDebug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
                 EditorUtility.DisplayDialog("✓ Probe 烘焙完成",
                     $"已烘焙 '{probe.name}'\n保存到: {filename}\n已切换为 Custom 模式", "确定");
             }
@@ -2534,7 +2686,7 @@ namespace BYTools.EnvTimelineSimple
             {
                 // 烘焙失败：恢复原始模式
                 probe.mode = originalMode;
-                Debug.LogError("[EnvTimeline] Probe 烘焙失败");
+                EnvTimeSimpleDebug.LogError("[EnvTimeline] Probe 烘焙失败");
                 EditorUtility.DisplayDialog("错误", "Probe 烘焙失败，请查看 Console", "确定");
             }
         }
@@ -2571,7 +2723,7 @@ namespace BYTools.EnvTimelineSimple
 
             if (skippedNodes.Count > 0)
             {
-                Debug.Log($"[EnvTimeline] {skippedNodes.Count} 个节点无有效反射球，跳过 SH 烘焙："
+                EnvTimeSimpleDebug.Log($"[EnvTimeline] {skippedNodes.Count} 个节点无有效反射球，跳过 SH 烘焙："
                     + string.Join(", ", skippedNodes.ConvertAll(n => n.nodeName)));
             }
 
@@ -2591,7 +2743,7 @@ namespace BYTools.EnvTimelineSimple
                 }
                 catch (System.Exception ex)
                 {
-                    Debug.LogError($"[EnvTimeline] 节点 [{node.nodeName}] SH 烘焙失败: {ex.Message}");
+                    EnvTimeSimpleDebug.LogError($"[EnvTimeline] 节点 [{node.nodeName}] SH 烘焙失败: {ex.Message}");
                     fail++;
                 }
             }
@@ -2623,7 +2775,7 @@ namespace BYTools.EnvTimelineSimple
         {
             if (string.IsNullOrEmpty(exrPath) || !File.Exists(exrPath))
             {
-                Debug.LogError($"[EnvTimeline] EXR 文件不存在: {exrPath}");
+                EnvTimeSimpleDebug.LogError($"[EnvTimeline] EXR 文件不存在: {exrPath}");
                 return null;
             }
 
@@ -2655,7 +2807,7 @@ namespace BYTools.EnvTimelineSimple
             Cubemap sourceCube = AssetDatabase.LoadAssetAtPath<Cubemap>(exrPath);
             if (sourceCube == null)
             {
-                Debug.LogError($"[EnvTimeline] 无法加载 Cubemap: {exrPath}");
+                EnvTimeSimpleDebug.LogError($"[EnvTimeline] 无法加载 Cubemap: {exrPath}");
                 return null;
             }
 
@@ -2734,7 +2886,7 @@ namespace BYTools.EnvTimelineSimple
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"[EnvTimeline] EXR 编码失败: {e.Message}");
+                EnvTimeSimpleDebug.LogError($"[EnvTimeline] EXR 编码失败: {e.Message}");
                 Object.DestroyImmediate(stripTex);
                 return null;
             }
@@ -2742,7 +2894,7 @@ namespace BYTools.EnvTimelineSimple
 
             if (exrBytes == null || exrBytes.Length == 0)
             {
-                Debug.LogError("[EnvTimeline] EXR 编码返回空数据");
+                EnvTimeSimpleDebug.LogError("[EnvTimeline] EXR 编码返回空数据");
                 return null;
             }
 
@@ -2906,7 +3058,7 @@ namespace BYTools.EnvTimelineSimple
                     node.mainProbe.bakedTexture = processed;
                 EditorUtility.SetDirty(node.mainProbe);
 
-                Debug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {cubePath} (角度: {node.hemisphereAngle}°)");
+                EnvTimeSimpleDebug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {cubePath} (角度: {node.hemisphereAngle}°)");
                 EditorUtility.DisplayDialog("✓ 处理完成",
                     $"半球映射处理完成\n文件: {cubePath}\n角度: {node.hemisphereAngle}°", "确定");
             }

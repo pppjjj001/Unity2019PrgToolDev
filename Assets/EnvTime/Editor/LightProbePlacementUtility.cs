@@ -110,7 +110,7 @@ namespace BYTools.EnvTimeline
 
             if (positions.Count == 0)
             {
-                Debug.LogWarning("[LightProbePlacement] 生成的探针位置为空，请检查参数");
+                EnvTimeDebug.LogWarning("[LightProbePlacement] 生成的探针位置为空，请检查参数");
                 return targetGroup;
             }
 
@@ -134,7 +134,7 @@ namespace BYTools.EnvTimeline
             targetGroup.probePositions = localPositions;
             EditorUtility.SetDirty(targetGroup);
 
-            Debug.Log($"[LightProbePlacement] 已生成 {positions.Count} 个探针位置到 '{targetGroup.name}'");
+            EnvTimeDebug.Log($"[LightProbePlacement] 已生成 {positions.Count} 个探针位置到 '{targetGroup.name}'");
 
             if (settings.autoBake)
             {
@@ -251,7 +251,7 @@ namespace BYTools.EnvTimeline
 
             if (count == 0)
             {
-                Debug.LogWarning("[LightProbePlacement] 未找到任何 Renderer");
+                EnvTimeDebug.LogWarning("[LightProbePlacement] 未找到任何 Renderer");
                 return;
             }
 
