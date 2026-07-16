@@ -1,6 +1,5 @@
 //EnvironmentTimelineClipEditor.cs
 // 在 Unity Timeline 编辑窗口中，于 Clip 背景上预览显示每个环境时间节点的位置。
-#if UNITY_EDITOR
 using UnityEditor;
 using UnityEditor.Timeline;
 using UnityEngine;
@@ -177,4 +176,3 @@ namespace UnityEditor.EnvTimelineSimple
         }
     }
 }
-#endif

@@ -1,5 +1,4 @@
 ﻿//EnvironmentTimelineControllerEditor.cs（更新版本）
-#if UNITY_EDITOR
 using UnityEditor;
 using UnityEngine;
 using Hotfix.Core.EnvTimelineSimple;
@@ -60,4 +59,3 @@ namespace UnityEditor.EnvTimelineSimple
         }
     }
 }
-#endif

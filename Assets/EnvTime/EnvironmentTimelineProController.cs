@@ -752,40 +752,41 @@ namespace BYTools.EnvTimeline
             }
         }
 
-        void UpdateProbeActivation(EnvTimeNode from, EnvTimeNode to, float t, BlendZone bz)
+void UpdateProbeActivation(EnvTimeNode from, EnvTimeNode to, float t, BlendZone bz)
+{
+    if (from == to)
+    {
+        // 同一节点：只激活 from 的 Probe（如果 enableReflectionSphere 开启）
+        _nextActiveProbes.Clear();
+        if (from != null && from.enableReflectionSphere && from.mainProbe)
+            _nextActiveProbes.Add(from.mainProbe);
+    }
+    else
+    {
+        // ★ BlendZone：根据混合区域设置决定 Probe 切换
+        float probeBlend = bz != null ? bz.EvaluateProbeBlend(t) : (t >= 1f ? 1f : 0f);
+        bool useToProbe = bz != null ? bz.ShouldSwitchProbe(t) : (t >= 1f);
+        float smoothW = bz != null && bz.enabled
+            ? Mathf.Clamp01(bz.probeSwitchSmoothWidth) : 0f;
+
+        _nextActiveProbes.Clear();
+
+        if (smoothW > 0.001f && probeBlend > 0f && probeBlend < 1f)
         {
-            if (from == to)
-            {
-                _nextActiveProbes.Clear();
-                if (from != null && from.mainProbe)
-                    _nextActiveProbes.Add(from.mainProbe);
-            }
-            else
-            {
-                // ★ BlendZone：根据混合区域设置决定 Probe 切换
-                float probeBlend = bz != null ? bz.EvaluateProbeBlend(t) : (t >= 1f ? 1f : 0f);
-                bool useToProbe = bz != null ? bz.ShouldSwitchProbe(t) : (t >= 1f);
-                float smoothW = bz != null && bz.enabled
-                    ? Mathf.Clamp01(bz.probeSwitchSmoothWidth) : 0f;
-
-                _nextActiveProbes.Clear();
-
-                if (smoothW > 0.001f && probeBlend > 0f && probeBlend < 1f)
-                {
-                    // 平滑过渡期间：同时激活两个 Probe
-                    if (from != null && from.mainProbe)
-                        _nextActiveProbes.Add(from.mainProbe);
-                    if (to != null && to.mainProbe)
-                        _nextActiveProbes.Add(to.mainProbe);
-                }
-                else
-                {
-                    // 硬切换：只激活一个 Probe
-                    EnvTimeNode activeNode = useToProbe ? to : from;
-                    if (activeNode != null && activeNode.mainProbe)
-                        _nextActiveProbes.Add(activeNode.mainProbe);
-                }
-            }
+            // 平滑过渡期间：同时激活两个 Probe（enableReflectionSphere=false 的节点跳过）
+            if (from != null && from.enableReflectionSphere && from.mainProbe)
+                _nextActiveProbes.Add(from.mainProbe);
+            if (to != null && to.enableReflectionSphere && to.mainProbe)
+                _nextActiveProbes.Add(to.mainProbe);
+        }
+        else
+        {
+            // 硬切换：只激活一个 Probe（enableReflectionSphere=false 的节点跳过）
+            EnvTimeNode activeNode = useToProbe ? to : from;
+            if (activeNode != null && activeNode.enableReflectionSphere && activeNode.mainProbe)
+                _nextActiveProbes.Add(activeNode.mainProbe);
+        }
+    }
 
             foreach (var p in _currentActiveProbes)
             {

@@ -1,5 +1,4 @@
 ﻿// EnvironmentTimelineEditorWindow.cs（MonoBehaviour 适配版 - 全局可滚动 + 视觉强化版）
-#if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -1796,6 +1795,19 @@ namespace UnityEditor.EnvTimelineSimple
             EditorGUILayout.Space(4);
             DrawSectionHeader("ReflectionProbe", CLR_PROBE, "🔮");
 
+            // 启用反射球开关
+            EditorGUI.BeginChangeCheck();
+            bool newEnableSphere = EditorGUILayout.ToggleLeft(
+                new GUIContent("  启用反射球", "勾选时此节点会启用自身的反射球；取消后使用系统默认反射环境（烘焙 SH 不受影响）"),
+                node.enableReflectionSphere);
+            if (EditorGUI.EndChangeCheck())
+            {
+                Undo.RecordObject(data, "Toggle Enable Reflection Sphere");
+                node.enableReflectionSphere = newEnableSphere;
+                EditorUtility.SetDirty(data);
+            }
+            EditorGUILayout.Space(2);
+
             EditorGUI.BeginChangeCheck();
             ReflectionProbe newProbe = (ReflectionProbe)EditorGUILayout.ObjectField(
                 "主 Probe", node.mainProbe, typeof(ReflectionProbe), true);
@@ -2033,9 +2045,8 @@ namespace UnityEditor.EnvTimelineSimple
             EditorGUILayout.HelpBox(
                 "启用后，烘焙 ReflectionProbe 时会在 Baked 光源位置创建临时自发光代理物体（小球/面板），\n" +
                 "使 Baked 光源在 Cubemap 中产生镜面高光。\n" +
-                "Point/Spot 光源 → 自发光小球，Area 光源 → 自发光半透明面板。\n" +
-                "原理参考：github.com/zulubo/SpecularProbes",
-                MessageType.Info);
+                "Point/Spot 光源 → 自发光小球，Area 光源 → 自发光半透明面板。\n" ,
+                MessageType.Info);//+ "原理参考：github.com/zulubo/SpecularProbes"
 
             node.enableSpecularLightBaking = EditorGUILayout.Toggle(
                 new GUIContent("启用镜面高光烘焙",
@@ -2369,7 +2380,7 @@ namespace UnityEditor.EnvTimelineSimple
                 importer.generateCubemap = TextureImporterGenerateCubemap.AutoCubemap;
                 importer.sRGBTexture = true;
                 importer.alphaSource = TextureImporterAlphaSource.FromInput;
-                importer.alphaIsTransparency = false;
+                importer.alphaIsTransparency = true;
                 importer.mipmapEnabled = true;
                 importer.borderMipmap = false;
                 importer.isReadable = false;
@@ -2863,7 +2874,7 @@ namespace UnityEditor.EnvTimelineSimple
             }
 
             // 6. 创建横向条带 Texture2D 并编码为 EXR
-            Texture2D stripTex = new Texture2D(size * 6, size, TextureFormat.RGBAFloat, false);
+            Texture2D stripTex = new Texture2D(size * 6, size, TextureFormat.RGBA32, false);
             for (int face = 0; face < 6; face++)
             {
                 // 上下翻转 y：EncodeToEXR 与 GetPixels 的 y 约定相反，需要预翻转
@@ -2909,8 +2920,8 @@ namespace UnityEditor.EnvTimelineSimple
                 importer.textureShape = TextureImporterShape.TextureCube;
                 importer.generateCubemap = TextureImporterGenerateCubemap.FullCubemap;
                 importer.sRGBTexture = origSRGB;
-                importer.alphaSource = TextureImporterAlphaSource.None;
-                importer.alphaIsTransparency = false;
+                importer.alphaSource = TextureImporterAlphaSource.FromInput;
+                importer.alphaIsTransparency = true;
                 importer.mipmapEnabled = origMipMaps;
                 importer.borderMipmap = false;
                 importer.npotScale = TextureImporterNPOTScale.ToNearest;
@@ -3069,4 +3080,3 @@ namespace UnityEditor.EnvTimelineSimple
         }
     }
 }
-#endif

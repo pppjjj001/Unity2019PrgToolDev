@@ -215,9 +215,9 @@ namespace Hotfix.Core.EnvTimelineSimple
         {
             if (from == to)
             {
-                // 同一节点：只激活 from 的 Probe
+                // 同一节点：只激活 from 的 Probe（如果 enableReflectionSphere 开启）
                 _nextActiveProbes.Clear();
-                if (from != null && from.mainProbe)
+                if (from != null && from.enableReflectionSphere && from.mainProbe)
                     _nextActiveProbes.Add(from.mainProbe);
             }
             else
@@ -232,17 +232,17 @@ namespace Hotfix.Core.EnvTimelineSimple
 
                 if (smoothW > 0.001f && probeBlend > 0f && probeBlend < 1f)
                 {
-                    // 平滑过渡期间：同时激活两个 Probe
-                    if (from != null && from.mainProbe)
+                    // 平滑过渡期间：同时激活两个 Probe（enableReflectionSphere=false 的节点跳过）
+                    if (from != null && from.enableReflectionSphere && from.mainProbe)
                         _nextActiveProbes.Add(from.mainProbe);
-                    if (to != null && to.mainProbe)
+                    if (to != null && to.enableReflectionSphere && to.mainProbe)
                         _nextActiveProbes.Add(to.mainProbe);
                 }
                 else
                 {
-                    // 硬切换：只激活一个 Probe
+                    // 硬切换：只激活一个 Probe（enableReflectionSphere=false 的节点跳过）
                     EnvTimeNode activeNode = useToProbe ? to : from;
-                    if (activeNode != null && activeNode.mainProbe)
+                    if (activeNode != null && activeNode.enableReflectionSphere && activeNode.mainProbe)
                         _nextActiveProbes.Add(activeNode.mainProbe);
                 }
             }

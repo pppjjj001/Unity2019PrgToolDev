@@ -288,6 +288,11 @@ namespace Hotfix.Core.EnvTimelineSimple
         public float time = 0f;
 
         [Header("ReflectionProbe（直接引用，随预设保存）")]
+        [Tooltip("启用此节点的反射球（ReflectionProbe）。\n"
+                 + "✅ 勾选：此节点激活时会启用自身的反射球（默认）。\n"
+                 + "❌ 取消：此节点的反射球不会启用，场景将使用系统默认的反射环境。\n"
+                 + "（注意：取消后烘焙 SH 等不受影响，仅运行时反射球不激活）。")]
+        public bool enableReflectionSphere = true;
         public ReflectionProbe mainProbe;
         public List<ReflectionProbe> additionalProbes = new List<ReflectionProbe>();
 

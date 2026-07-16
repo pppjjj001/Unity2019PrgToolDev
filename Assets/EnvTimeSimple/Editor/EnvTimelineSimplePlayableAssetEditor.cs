@@ -1,5 +1,4 @@
 ﻿//EnvironmentTimelinePlayableAssetEditor.cs
-#if UNITY_EDITOR
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Playables;
@@ -145,4 +144,3 @@ namespace UnityEditor.EnvTimelineSimple
         }
     }
 }
-#endif

@@ -1387,6 +1387,19 @@ namespace BYTools.EnvTimeline
             EditorGUILayout.Space(4);
             DrawSectionHeader("ReflectionProbe", CLR_PROBE, "🔮");
 
+            // 启用反射球开关
+            EditorGUI.BeginChangeCheck();
+            bool newEnableSphere = EditorGUILayout.ToggleLeft(
+                new GUIContent("  启用反射球", "勾选时此节点会启用自身的反射球；取消后使用系统默认反射环境（烘焙 SH 不受影响）"),
+                node.enableReflectionSphere);
+            if (EditorGUI.EndChangeCheck())
+            {
+                Undo.RecordObject(data, "Toggle Enable Reflection Sphere");
+                node.enableReflectionSphere = newEnableSphere;
+                EditorUtility.SetDirty(data);
+            }
+            EditorGUILayout.Space(2);
+
             EditorGUI.BeginChangeCheck();
             ReflectionProbe newProbe = (ReflectionProbe)EditorGUILayout.ObjectField(
                 "主 Probe", node.mainProbe, typeof(ReflectionProbe), true);
