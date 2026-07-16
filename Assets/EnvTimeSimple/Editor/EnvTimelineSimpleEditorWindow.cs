@@ -1,8 +1,7 @@
-﻿// EnvironmentTimelineEditorWindow.cs（MonoBehaviour 适配版 - 全局可滚动 + 视觉强化版）
+﻿// EnvTimelineSimpleEditorWindow.cs（壳类 - 通过反射调用 EnvTimelineSimpleCore）
+// 所有核心业务逻辑已抽取到 EnvTimelineSimpleCore，本类仅保留 UI 绘制和事件处理
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -11,682 +10,77 @@ using Hotfix.Core.EnvTimelineSimple;
 
 namespace UnityEditor.EnvTimelineSimple
 {
-    // ================================================================
-    // Cubemap → SH L2 (9 系数) CPU 端积分器
-    // 完全独立的工具类，可被任何编辑器工具调用
-    // ================================================================
-    public static class CubemapSHProjector
-    {
-        static readonly Vector3[] FaceUAxis =
-        {
-            new Vector3( 0, 0,-1), new Vector3( 0, 0, 1),
-            new Vector3( 1, 0, 0), new Vector3( 1, 0, 0),
-            new Vector3( 1, 0, 0), new Vector3(-1, 0, 0),
-        };
-
-        static readonly Vector3[] FaceVAxis =
-        {
-            new Vector3(0,-1, 0), new Vector3(0,-1, 0),
-            new Vector3(0, 0, 1), new Vector3(0, 0,-1),
-            new Vector3(0,-1, 0), new Vector3(0,-1, 0),
-        };
-
-        static readonly Vector3[] FaceNormal =
-        {
-            new Vector3( 1, 0, 0), new Vector3(-1, 0, 0),
-            new Vector3( 0, 1, 0), new Vector3( 0,-1, 0),
-            new Vector3( 0, 0, 1), new Vector3( 0, 0,-1),
-        };
-
-        /// <summary>
-        /// 根据 Cubemap 面索引和 UV 坐标 [-1,1] 计算方向向量（已归一化）
-        /// </summary>
-        public static Vector3 GetCubemapDirection(int face, float u, float v)
-        {
-            Vector3 dir = FaceNormal[face] + FaceUAxis[face] * u + FaceVAxis[face] * v;
-            dir.Normalize();
-            return dir;
-        }
-
-        static Vector3 RotateAroundY(Vector3 dir, float angleDeg)
-        {
-            float rad = angleDeg * Mathf.Deg2Rad;
-            float cosA = Mathf.Cos(rad);
-            float sinA = Mathf.Sin(rad);
-            return new Vector3(
-                dir.x * cosA + dir.z * sinA,
-                dir.y,
-                -dir.x * sinA + dir.z * cosA
-            );
-        }
-
-        /// <summary>
-        /// 将 Cubemap 投影到 SH L2（9 个基函数）
-        /// 返回 float[9,3]：[i,0]=R [i,1]=G [i,2]=B
-        /// 计算结果在 **线性空间**
-        /// </summary>
-        public static float[,] ProjectCubemapToSH(Cubemap cube, int maxResolution = 64,
-            float rotationY = 0f, float hdrClampMax = 0f)
-        {
-            if (cube == null) return null;
-
-            Cubemap readableCube = MakeReadableCopy(cube, maxResolution);
-            if (readableCube == null) return null;
-
-            int size = readableCube.width;
-            float[,] coeffs = new float[9, 3];
-            double totalWeight = 0;
-
-            bool needGammaToLinear = NeedGammaToLinearConversion(cube);
-            bool doClamp = (hdrClampMax > 0f);
-
-            for (int face = 0; face < 6; face++)
-            {
-                Color[] pixels = readableCube.GetPixels((CubemapFace)face);
-
-                for (int y = 0; y < size; y++)
-                {
-                    for (int x = 0; x < size; x++)
-                    {
-                        float u = (x + 0.5f) / size * 2f - 1f;
-                        float v = (y + 0.5f) / size * 2f - 1f;
-
-                        Vector3 dir = FaceNormal[face] + FaceUAxis[face] * u + FaceVAxis[face] * v;
-                        dir.Normalize();
-
-                        if (Mathf.Abs(rotationY) > 0.001f)
-                            dir = RotateAroundY(dir, rotationY);
-
-                        float tmp = 1f + u * u + v * v;
-                        float weight = 4f / (Mathf.Sqrt(tmp) * tmp * size * size);
-
-                        Color pixel = pixels[y * size + x];
-
-                        if (needGammaToLinear)
-                        {
-                            pixel.r = GammaToLinear(pixel.r);
-                            pixel.g = GammaToLinear(pixel.g);
-                            pixel.b = GammaToLinear(pixel.b);
-                        }
-
-                        float r = pixel.r;
-                        float g = pixel.g;
-                        float b = pixel.b;
-
-                        if (doClamp)
-                        {
-                            r = Mathf.Min(r, hdrClampMax);
-                            g = Mathf.Min(g, hdrClampMax);
-                            b = Mathf.Min(b, hdrClampMax);
-                        }
-
-                        float[] basis = EvalSHBasis9(dir);
-                        for (int i = 0; i < 9; i++)
-                        {
-                            float bw = basis[i] * weight;
-                            coeffs[i, 0] += r * bw;
-                            coeffs[i, 1] += g * bw;
-                            coeffs[i, 2] += b * bw;
-                        }
-
-                        totalWeight += weight;
-                    }
-                }
-            }
-
-            double normFactor = 4.0 * Math.PI / totalWeight;
-            for (int i = 0; i < 9; i++)
-            {
-                coeffs[i, 0] *= (float)normFactor;
-                coeffs[i, 1] *= (float)normFactor;
-                coeffs[i, 2] *= (float)normFactor;
-            }
-
-            if (readableCube != cube)
-                UnityEngine.Object.DestroyImmediate(readableCube);
-
-            return coeffs;
-        }
-
-        /// <summary>
-        /// 将 SH L2 系数转换为 Unity 风格的 7 个 Vector4
-        /// 与 unity_SHAr 等完全对应
-        /// </summary>
-        public static void ConvertToUnityFormat(float[,] coeffs,
-            out Vector4 SHAr, out Vector4 SHAg, out Vector4 SHAb,
-            out Vector4 SHBr, out Vector4 SHBg, out Vector4 SHBb,
-            out Vector4 SHC)
-        {
-            SHAr = new Vector4(coeffs[3, 0], coeffs[1, 0], coeffs[2, 0], coeffs[0, 0]);
-            SHAg = new Vector4(coeffs[3, 1], coeffs[1, 1], coeffs[2, 1], coeffs[0, 1]);
-            SHAb = new Vector4(coeffs[3, 2], coeffs[1, 2], coeffs[2, 2], coeffs[0, 2]);
-
-            SHBr = new Vector4(coeffs[4, 0], coeffs[5, 0], coeffs[6, 0], coeffs[7, 0]);
-            SHBg = new Vector4(coeffs[4, 1], coeffs[5, 1], coeffs[6, 1], coeffs[7, 1]);
-            SHBb = new Vector4(coeffs[4, 2], coeffs[5, 2], coeffs[6, 2], coeffs[7, 2]);
-
-            SHC = new Vector4(coeffs[8, 0], coeffs[8, 1], coeffs[8, 2], 1.0f);
-        }
-
-        /// <summary>
-        /// 直接从 SphericalHarmonicsL2 转换为 Unity 风格 7 Vector4
-        /// </summary>
-        public static void ConvertFromSHL2(SphericalHarmonicsL2 sh,
-            out Vector4 SHAr, out Vector4 SHAg, out Vector4 SHAb,
-            out Vector4 SHBr, out Vector4 SHBg, out Vector4 SHBb,
-            out Vector4 SHC)
-        {
-            SHAr = new Vector4(sh[0, 3], sh[0, 1], sh[0, 2], sh[0, 0]);
-            SHAg = new Vector4(sh[1, 3], sh[1, 1], sh[1, 2], sh[1, 0]);
-            SHAb = new Vector4(sh[2, 3], sh[2, 1], sh[2, 2], sh[2, 0]);
-            SHBr = new Vector4(sh[0, 4], sh[0, 5], sh[0, 6], sh[0, 7]);
-            SHBg = new Vector4(sh[1, 4], sh[1, 5], sh[1, 6], sh[1, 7]);
-            SHBb = new Vector4(sh[2, 4], sh[2, 5], sh[2, 6], sh[2, 7]);
-            SHC  = new Vector4(sh[0, 8], sh[1, 8], sh[2, 8], 1.0f);
-        }
-
-        static float[] EvalSHBasis9(Vector3 dir)
-        {
-            float x = dir.x, y = dir.y, z = dir.z;
-            float[] b = new float[9];
-            b[0] = 0.2820947917f;
-            b[1] = 0.4886025119f * y;
-            b[2] = 0.4886025119f * z;
-            b[3] = 0.4886025119f * x;
-            b[4] = 1.0925484306f * x * y;
-            b[5] = 1.0925484306f * y * z;
-            b[6] = 0.3153915652f * (3f * z * z - 1f);
-            b[7] = 1.0925484306f * x * z;
-            b[8] = 0.5462742153f * (x * x - y * y);
-            return b;
-        }
-
-        static bool NeedGammaToLinearConversion(Cubemap cube)
-        {
-            if (QualitySettings.activeColorSpace == ColorSpace.Gamma)
-            {
-                string path = AssetDatabase.GetAssetPath(cube);
-                if (!string.IsNullOrEmpty(path))
-                {
-                    TextureImporter importer = AssetImporter.GetAtPath(path) as TextureImporter;
-                    if (importer != null && importer.sRGBTexture)
-                        return true;
-                }
-                if (cube.format == TextureFormat.RGBA32 || cube.format == TextureFormat.RGB24 ||
-                    cube.format == TextureFormat.ARGB32 || cube.format == TextureFormat.DXT1 ||
-                    cube.format == TextureFormat.DXT5 || cube.format == TextureFormat.BC7)
-                    return true;
-            }
-            return false;
-        }
-
-        static float GammaToLinear(float v)
-        {
-            if (v <= 0.04045f) return v / 12.92f;
-            return Mathf.Pow((v + 0.055f) / 1.055f, 2.4f);
-        }
-
-        static Cubemap MakeReadableCopy(Cubemap source, int maxRes)
-        {
-            int size = Mathf.Min(source.width, maxRes);
-
-            try
-            {
-                Color[] test = source.GetPixels(CubemapFace.PositiveX);
-                if (test != null && test.Length > 0)
-                {
-                    if (source.width <= maxRes) return source;
-                    return DownsampleCubemap(source, size);
-                }
-            }
-            catch { }
-
-            // 不可读 → 通过 RenderTexture 拷贝
-            return CopyViaRenderTexture(source, size);
-        }
-
-        static Cubemap CopyViaRenderTexture(Cubemap source, int size)
-        {
-            RenderTexture rt = new RenderTexture(size, size, 0, RenderTextureFormat.ARGBFloat);
-            rt.dimension = TextureDimension.Cube;
-            rt.useMipMap = false;
-            rt.Create();
-
-            Cubemap result = new Cubemap(size, TextureFormat.RGBAFloat, false);
-
-            // 利用 Graphics.CopyTexture 进行 GPU 拷贝（如果支持）
-            if ((SystemInfo.copyTextureSupport & CopyTextureSupport.DifferentTypes) != 0
-                && (SystemInfo.copyTextureSupport & CopyTextureSupport.Basic) != 0)
-            {
-                try
-                {
-                    int srcSize = source.width;
-                    if (srcSize == size)
-                    {
-                        for (int face = 0; face < 6; face++)
-                            Graphics.CopyTexture(source, face, 0, rt, face, 0);
-                    }
-                    else
-                    {
-                        // 不同尺寸：创建源尺寸 Cube RT，复制源数据，逐面读取后 CPU 缩放
-                        // （原代码只 GL.Clear(black) 未拷贝源数据 → 全黑 → SH 全零）
-                        RenderTexture srcRT = new RenderTexture(srcSize, srcSize, 0, RenderTextureFormat.ARGBFloat);
-                        srcRT.dimension = TextureDimension.Cube;
-                        srcRT.useMipMap = false;
-                        srcRT.Create();
-
-                        for (int face = 0; face < 6; face++)
-                            Graphics.CopyTexture(source, face, 0, srcRT, face, 0);
-
-                        float scale = (float)srcSize / size;
-                        for (int face = 0; face < 6; face++)
-                        {
-                            Graphics.SetRenderTarget(srcRT, 0, (CubemapFace)face);
-                            Texture2D srcTex = new Texture2D(srcSize, srcSize, TextureFormat.RGBAFloat, false);
-                            srcTex.ReadPixels(new Rect(0, 0, srcSize, srcSize), 0, 0);
-                            srcTex.Apply();
-                            Color[] srcPx = srcTex.GetPixels();
-                            UnityEngine.Object.DestroyImmediate(srcTex);
-
-                            Color[] dstPx = new Color[size * size];
-                            for (int y = 0; y < size; y++)
-                                for (int x = 0; x < size; x++)
-                                {
-                                    int sx = Mathf.Clamp(Mathf.FloorToInt(x * scale), 0, srcSize - 1);
-                                    int sy = Mathf.Clamp(Mathf.FloorToInt(y * scale), 0, srcSize - 1);
-                                    dstPx[y * size + x] = srcPx[sy * srcSize + sx];
-                                }
-                            result.SetPixels(dstPx, (CubemapFace)face);
-                        }
-                        result.Apply();
-
-                        UnityEngine.Object.DestroyImmediate(srcRT);
-                        RenderTexture.active = null;
-                        UnityEngine.Object.DestroyImmediate(rt);
-                        return result;
-                    }
-                }
-                catch
-                {
-                    UnityEngine.Object.DestroyImmediate(rt);
-                    EnvTimeSimpleDebug.LogError("[CubemapSHProjector] 无法读取 Cubemap，请开启 Read/Write");
-                    return null;
-                }
-            }
-
-            // 从 RT 读回 CPU
-            for (int face = 0; face < 6; face++)
-            {
-                RenderTexture.active = rt;
-                Graphics.SetRenderTarget(rt, 0, (CubemapFace)face);
-
-                Texture2D tex = new Texture2D(size, size, TextureFormat.RGBAFloat, false);
-                tex.ReadPixels(new Rect(0, 0, size, size), 0, 0);
-                tex.Apply();
-                result.SetPixels(tex.GetPixels(), (CubemapFace)face);
-                UnityEngine.Object.DestroyImmediate(tex);
-            }
-
-            RenderTexture.active = null;
-            UnityEngine.Object.DestroyImmediate(rt);
-            result.Apply();
-            return result;
-        }
-
-        static Cubemap DownsampleCubemap(Cubemap source, int targetSize)
-        {
-            Cubemap result = new Cubemap(targetSize, TextureFormat.RGBAFloat, false);
-            int srcSize = source.width;
-            float scale = (float)srcSize / targetSize;
-
-            for (int face = 0; face < 6; face++)
-            {
-                Color[] srcPixels = source.GetPixels((CubemapFace)face);
-                Color[] dstPixels = new Color[targetSize * targetSize];
-                for (int y = 0; y < targetSize; y++)
-                    for (int x = 0; x < targetSize; x++)
-                    {
-                        int sx = Mathf.Clamp(Mathf.FloorToInt(x * scale), 0, srcSize - 1);
-                        int sy = Mathf.Clamp(Mathf.FloorToInt(y * scale), 0, srcSize - 1);
-                        dstPixels[y * targetSize + x] = srcPixels[sy * srcSize + sx];
-                    }
-                result.SetPixels(dstPixels, (CubemapFace)face);
-            }
-            result.Apply();
-            return result;
-        }
-
-        public static Color EvaluateSHAtDirection(float[,] coeffs, Vector3 dir)
-        {
-            float[] basis = EvalSHBasis9(dir);
-            float r = 0, g = 0, b = 0;
-            for (int i = 0; i < 9; i++)
-            {
-                r += coeffs[i, 0] * basis[i];
-                g += coeffs[i, 1] * basis[i];
-                b += coeffs[i, 2] * basis[i];
-            }
-            return new Color(Mathf.Max(0, r), Mathf.Max(0, g), Mathf.Max(0, b), 1);
-        }
-
-        public static Color EvaluateSHAtDirection(SphericalHarmonicsL2 sh, Vector3 dir)
-        {
-            Vector3[] dirs = new[] { dir };
-            Color[] colors = new Color[1];
-            sh.Evaluate(dirs, colors);
-            return colors[0];
-        }
-    }
+    /// <summary>
+    /// 环境时间轴编辑器窗口（壳类）
+    /// 核心功能通过 EnvTimelineSimpleProvider 反射调用 EnvTimelineSimpleCore
+    /// 核心可独立编译为 DLL，本壳无需直接引用核心类型
+    /// </summary>
     public class EnvTimelineSimpleEditorWindow : EditorWindow
     {
-        /// <summary>
-        /// 临时勾选 ReflectionProbeStatic 的作用域。
-        /// Create 时记录原始 StaticEditorFlags 并对未勾选的 GO 及其递归子物体设置 ReflectionProbeStatic，
-        /// Dispose 时还原全部原始状态。配合 using 语句确保异常 / 取消时也能还原。
-        /// </summary>
-        struct ReflectionProbeStaticScope : IDisposable
+        // ============================================================
+        // 反射桥接器
+        // ============================================================
+        EnvTimelineSimpleProvider _core;
+        EnvTimelineSimpleProvider core
         {
-            Dictionary<GameObject, StaticEditorFlags> _originalFlags;
-
-            public static ReflectionProbeStaticScope Create(List<GameObject> targets)
+            get
             {
-                var scope = new ReflectionProbeStaticScope();
-                if (targets == null || targets.Count == 0) return scope;
-
-                scope._originalFlags = new Dictionary<GameObject, StaticEditorFlags>();
-                var visited = new HashSet<GameObject>();
-                foreach (var go in targets)
-                {
-                    if (go == null) continue;
-                    CollectAndSetStatic(go, scope._originalFlags, visited);
-                }
-                return scope;
+                if (_core == null)
+                    _core = new EnvTimelineSimpleProvider();
+                return _core;
             }
+        }
 
-            static void CollectAndSetStatic(GameObject go,
-                Dictionary<GameObject, StaticEditorFlags> dict,
-                HashSet<GameObject> visited)
+        /// <summary>同步壳的状态到核心</summary>
+        void SyncCoreProperties()
+        {
+            if (_core != null && _core.IsValid)
             {
-                if (go == null || visited.Contains(go)) return;
-                visited.Add(go);
-
-                var flags = GameObjectUtility.GetStaticEditorFlags(go);
-                dict[go] = flags;
-
-                if ((flags & StaticEditorFlags.ReflectionProbeStatic) == 0)
-                    GameObjectUtility.SetStaticEditorFlags(
-                        go, flags | StaticEditorFlags.ReflectionProbeStatic);
-
-                foreach (Transform child in go.transform)
-                    CollectAndSetStatic(child.gameObject, dict, visited);
-            }
-
-            public void Dispose()
-            {
-                if (_originalFlags == null) return;
-                foreach (var kv in _originalFlags)
-                {
-                    if (kv.Key != null)
-                        GameObjectUtility.SetStaticEditorFlags(kv.Key, kv.Value);
-                }
-                _originalFlags.Clear();
+                _core.Data = _data;
+                _core.DefaultCubemapSize = _defaultCubemapSize;
+                _core.CubemapPrefix = _cubemapPrefix;
             }
         }
 
         // ============================================================
-        // 镜面高光烘焙作用域 (SpecularLightBakeScope)
-        //   烘焙前在 Baked 光源位置创建临时自发光代理物体，
-        //   使 Baked 光源在 Cubemap 中产生镜面高光。
-        //   烘焙后（Dispose）自动销毁所有代理物体。
-        //   原理：github.com/zulubo/SpecularProbes
+        // 数据与设置（与核心同步）
         // ============================================================
-        struct SpecularLightBakeScope : IDisposable
+        EnvironmentTimelineData _data;
+        EnvironmentTimelineData data
         {
-            List<GameObject> _proxies;
-            bool _enabled;
-
-            public static SpecularLightBakeScope Create(EnvTimeNode node)
+            get => _data;
+            set
             {
-                var scope = new SpecularLightBakeScope();
-                if (node == null || !node.enableSpecularLightBaking)
-                    return scope;
-
-                scope._enabled = true;
-                scope._proxies = new List<GameObject>();
-
-                // 收集光源
-                List<Light> lights = CollectLights(node);
-                if (lights.Count == 0) return scope;
-
-                float radius = Mathf.Max(0.001f, node.specularSphereRadius);
-                float intensityMul = node.specularIntensityMultiplier;
-                float areaScale = node.specularAreaPanelScale;
-
-                foreach (var light in lights)
-                {
-                    if (light == null) continue;
-
-                    GameObject proxy = null;
-                    switch (light.type)
-                    {
-                        case LightType.Point:
-                            proxy = CreateEmissiveSphere(
-                                light.transform.position,
-                                radius,
-                                light.color * intensityMul * light.intensity,
-                                light.gameObject.name + "_SpecProxy");
-                            break;
-
-                        case LightType.Spot:
-                            // 聚光灯：在光源位置放置小球
-                            proxy = CreateEmissiveSphere(
-                                light.transform.position,
-                                radius,
-                                light.color * intensityMul * light.intensity,
-                                light.gameObject.name + "_SpecProxy");
-                            break;
-
-                        case LightType.Area:
-                            // 面光源：创建自发光面板（支持 Cookie）
-                            proxy = CreateEmissivePanel(
-                                light.transform.position,
-                                light.transform.rotation,
-                                new Vector3(light.areaSize.x, light.areaSize.y, 1f) * areaScale,
-                                light.color * intensityMul * light.intensity,
-                                light.gameObject.name + "_SpecPanel",
-                                light.cookie);
-                            break;
-
-                        case LightType.Disc:
-                            // 圆盘光源：创建圆形自发光面板
-                            proxy = CreateEmissiveDisc(
-                                light.transform.position,
-                                light.transform.rotation,
-                                radius * 10f * areaScale,
-                                light.color * intensityMul * light.intensity,
-                                light.gameObject.name + "_SpecDisc");
-                            break;
-                    }
-
-                    if (proxy != null)
-                    {
-                        proxy.hideFlags = HideFlags.HideAndDontSave;
-                        // 代理物体需要勾选 ReflectionProbeStatic，
-                        // 确保烘焙 ReflectionProbe 时被正确纳入
-                        var flags = GameObjectUtility.GetStaticEditorFlags(proxy);
-                        GameObjectUtility.SetStaticEditorFlags(
-                            proxy, flags | StaticEditorFlags.ReflectionProbeStatic);
-                        scope._proxies.Add(proxy);
-                    }
-                }
-
-                if (scope._proxies.Count > 0)
-                {
-                    EnvTimeSimpleDebug.Log($"<color=#FFD700>[EnvTimeline]</color> SpecularLightBakeScope: 创建了 {scope._proxies.Count} 个自发光代理物体");
-                }
-
-                return scope;
-            }
-
-            public static List<Light> CollectLights(EnvTimeNode node)
-            {
-                var result = new List<Light>();
-                switch (node.specularLightCollectMode)
-                {
-                    case EnvTimeNode.SpecularLightCollectMode.ManualList:
-                        result.AddRange(node.specularLightTargets);
-                        break;
-
-                    case EnvTimeNode.SpecularLightCollectMode.AutoCollectBaked:
-                        // 自动收集 Baked 模式光源
-                        foreach (var light in Resources.FindObjectsOfTypeAll<Light>())
-                        {
-                            if (light == null) continue;
-                            if (light.lightmapBakeType == LightmapBakeType.Baked)
-                                result.Add(light);
-                        }
-                        break;
-
-                    case EnvTimeNode.SpecularLightCollectMode.AutoCollectAll:
-                        // 自动收集所有光源（含 Mixed）
-                        foreach (var light in Resources.FindObjectsOfTypeAll<Light>())
-                        {
-                            if (light == null) continue;
-                            if (light.lightmapBakeType == LightmapBakeType.Baked ||
-                                light.lightmapBakeType == LightmapBakeType.Mixed)
-                                result.Add(light);
-                        }
-                        break;
-                }
-                return result;
-            }
-
-            /// <summary>
-            /// 创建自发光小球体（用于 Point/Spot 光源）
-            /// </summary>
-            public static GameObject CreateEmissiveSphere(Vector3 pos, float radius,
-                Color emissiveColor, string name)
-            {
-                var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                go.name = name;
-                go.transform.position = pos;
-                go.transform.localScale = Vector3.one * (radius * 2f);
-
-                // 确保有 MeshRenderer
-                var mr = go.GetComponent<MeshRenderer>();
-                if (mr == null) mr = go.AddComponent<MeshRenderer>();
-
-                // 使用自发光材质（HDR 颜色）
-                var mat = new Material(Shader.Find("Standard"));
-                mat.EnableKeyword("_EMISSION");
-                mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
-                mat.SetColor("_Color", Color.black);
-                mat.SetColor("_EmissionColor", emissiveColor);
-                mr.sharedMaterial = mat;
-
-                return go;
-            }
-
-            /// <summary>
-            /// 创建自发光面板（用于 Area 光源），支持 Cookie 纹理
-            /// </summary>
-            public static GameObject CreateEmissivePanel(Vector3 pos, Quaternion rot,
-                Vector3 scale, Color emissiveColor, string name, Texture cookie = null)
-            {
-                var go = GameObject.CreatePrimitive(PrimitiveType.Quad);
-                go.name = name;
-                go.transform.position = pos;
-                // Unity 光源沿 -Z 方向发光，Quad 法线默认 +Z，需翻转 180°
-                go.transform.rotation = rot * Quaternion.Euler(0, 180, 0);
-                // Quad 默认 1x1，按光源 scale 缩放
-                go.transform.localScale = new Vector3(
-                    Mathf.Max(0.01f, scale.x),
-                    Mathf.Max(0.01f, scale.y),
-                    1f);
-
-                var mr = go.GetComponent<MeshRenderer>();
-                if (mr == null) mr = go.AddComponent<MeshRenderer>();
-
-                var mat = new Material(Shader.Find("Standard"));
-                mat.EnableKeyword("_EMISSION");
-                mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
-                mat.SetColor("_Color", Color.black);
-                mat.SetColor("_EmissionColor", emissiveColor);
-                // Cookie 纹理：作为自发光贴图，使面板呈现 cookie 图案
-                if (cookie != null)
-                    mat.SetTexture("_EmissionMap", cookie);
-                // 半透明模式，Cookie 透明区域不遮挡场景
-                mat.SetOverrideTag("RenderType", "Transparent");
-                mat.SetFloat("_Mode", 3); // Transparent
-                mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
-                mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
-                mat.SetInt("_ZWrite", 0);
-                mat.renderQueue = 3000;
-                // 双面渲染：Quad 默认只渲染正面，Probe 在背面会看不见
-                mat.SetInt("_Cull", 0); // Cull Off
-                mr.sharedMaterial = mat;
-
-                return go;
-            }
-
-            /// <summary>
-            /// 创建自发光圆盘（用于 Disc 光源）
-            /// </summary>
-            public static GameObject CreateEmissiveDisc(Vector3 pos, Quaternion rot,
-                float radius, Color emissiveColor, string name)
-            {
-                var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                go.name = name;
-                go.transform.position = pos;
-                go.transform.rotation = rot;
-                // 扁平化为圆盘
-                go.transform.localScale = new Vector3(radius * 2f, radius * 2f, 0.01f);
-
-                var mr = go.GetComponent<MeshRenderer>();
-                if (mr == null) mr = go.AddComponent<MeshRenderer>();
-
-                var mat = new Material(Shader.Find("Standard"));
-                mat.EnableKeyword("_EMISSION");
-                mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
-                mat.SetColor("_Color", Color.black);
-                mat.SetColor("_EmissionColor", emissiveColor);
-                // 不透明，与其他代理保持一致
-                mat.SetFloat("_Mode", 0); // Opaque
-                mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
-                mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.Zero);
-                mat.SetInt("_ZWrite", 1);
-                mat.renderQueue = -1; // 自动
-                mr.sharedMaterial = mat;
-
-                return go;
-            }
-
-            public void Dispose()
-            {
-                if (!_enabled) return;
-
-                if (_proxies != null)
-                {
-                    foreach (var go in _proxies)
-                    {
-                        if (go != null)
-                        {
-                            // 销毁临时材质
-                            var mr = go.GetComponent<MeshRenderer>();
-                            if (mr != null && mr.sharedMaterial != null)
-                                DestroyImmediate(mr.sharedMaterial);
-                            // 销毁碰撞体（PrimitiveType 自带）
-                            var col = go.GetComponent<Collider>();
-                            if (col != null) DestroyImmediate(col);
-                            DestroyImmediate(go);
-                        }
-                    }
-                    _proxies.Clear();
-                }
+                _data = value;
+                if (_core != null) _core.Data = value;
             }
         }
 
-        EnvironmentTimelineData data;
+        [SerializeField] private int _defaultCubemapSize = 128;
+        [SerializeField] private string _cubemapPrefix = "Baked";
+
+        int defaultCubemapSize
+        {
+            get => _defaultCubemapSize;
+            set
+            {
+                _defaultCubemapSize = value;
+                if (_core != null) _core.DefaultCubemapSize = value;
+            }
+        }
+        string cubemapPrefix
+        {
+            get => _cubemapPrefix;
+            set
+            {
+                _cubemapPrefix = value;
+                if (_core != null) _core.CubemapPrefix = value;
+            }
+        }
+
+        // ============================================================
+        // UI 状态
+        // ============================================================
         Vector2 mainScroll;
         int selectedNodeIndex = -1;
 
@@ -709,9 +103,9 @@ namespace UnityEditor.EnvTimelineSimple
         bool _isSpecularPreviewActive = false;
         int _specularPreviewNodeIndex = -1;
 
-        [SerializeField] private int defaultCubemapSize = 128;
-        [SerializeField] private string cubemapPrefix = "Baked";
-
+        // ============================================================
+        // 配色
+        // ============================================================
         static readonly Color CLR_TITLE       = new Color(1f, 0.85f, 0.3f);
         static readonly Color CLR_OK          = new Color(0.4f, 1f, 0.5f);
         static readonly Color CLR_WARN        = new Color(1f, 0.6f, 0.2f);
@@ -721,12 +115,14 @@ namespace UnityEditor.EnvTimelineSimple
         static readonly Color CLR_MUTED       = new Color(0.55f, 0.55f, 0.55f);
         static readonly Color CLR_BG_PANEL    = new Color(0.22f, 0.22f, 0.26f);
         static readonly Color CLR_BG_DUP      = new Color(0.6f, 0.15f, 0.15f);
-        // BlendZone 颜色
         static readonly Color CLR_BLEND_ZONE  = new Color(0.8f, 0.5f, 1f, 0.25f);
         static readonly Color CLR_BLEND_EDGE  = new Color(0.8f, 0.5f, 1f, 0.6f);
         static readonly Color CLR_PROBE_SWITCH = new Color(1f, 0.3f, 0.3f, 0.8f);
         static readonly Color CLR_PROBE_SMOOTH = new Color(1f, 0.6f, 0.2f, 0.3f);
 
+        // ============================================================
+        // MenuItem / 生命周期
+        // ============================================================
         [MenuItem("Tools/BYTools/Environment Timeline Simple 编辑器", false, 110)]
         public static void Open()
         {
@@ -766,8 +162,7 @@ namespace UnityEditor.EnvTimelineSimple
         }
 
         /// <summary>
-        /// 创建镜面高光代理预览物体，复用 SpecularLightBakeScope 的创建方法。
-        /// 物体标记为 HideAndDontSave，不存入场景、不显示在 Hierarchy。
+        /// 创建镜面高光代理预览物体，通过反射调用核心类的代理创建方法。
         /// </summary>
         void CreateSpecularPreview(EnvTimeNode node, int nodeIndex)
         {
@@ -775,8 +170,8 @@ namespace UnityEditor.EnvTimelineSimple
 
             if (node == null || !node.enableSpecularLightBaking) return;
 
-            var lights = SpecularLightBakeScope.CollectLights(node);
-            if (lights.Count == 0)
+            var lights = core.CollectSpecularLights(node);
+            if (lights == null || lights.Count == 0)
             {
                 EnvTimeSimpleDebug.LogWarning("[EnvTimeline] 预览: 未收集到任何光源，请检查光源配置");
                 return;
@@ -795,21 +190,21 @@ namespace UnityEditor.EnvTimelineSimple
                 switch (light.type)
                 {
                     case LightType.Point:
-                        proxy = SpecularLightBakeScope.CreateEmissiveSphere(
+                        proxy = core.CreateSpecularSphere(
                             light.transform.position, radius,
                             light.color * intensityMul * light.intensity,
                             light.gameObject.name + "_SpecProxy");
                         break;
 
                     case LightType.Spot:
-                        proxy = SpecularLightBakeScope.CreateEmissiveSphere(
+                        proxy = core.CreateSpecularSphere(
                             light.transform.position, radius,
                             light.color * intensityMul * light.intensity,
                             light.gameObject.name + "_SpecProxy");
                         break;
 
                     case LightType.Area:
-                        proxy = SpecularLightBakeScope.CreateEmissivePanel(
+                        proxy = core.CreateSpecularPanel(
                             light.transform.position, light.transform.rotation,
                             new Vector3(light.areaSize.x, light.areaSize.y, 1f) * areaScale,
                             light.color * intensityMul * light.intensity,
@@ -818,7 +213,7 @@ namespace UnityEditor.EnvTimelineSimple
                         break;
 
                     case LightType.Disc:
-                        proxy = SpecularLightBakeScope.CreateEmissiveDisc(
+                        proxy = core.CreateSpecularDisc(
                             light.transform.position, light.transform.rotation,
                             radius * 10f * areaScale,
                             light.color * intensityMul * light.intensity,
@@ -848,7 +243,6 @@ namespace UnityEditor.EnvTimelineSimple
 
         /// <summary>
         /// 窗口获得焦点时自动检测当前选中物体上的 EnvironmentTimelineData。
-        /// 便于从 Timeline Clip Inspector 的"打开编辑器"按钮快速跳转。
         /// </summary>
         void OnFocus()
         {
@@ -864,6 +258,8 @@ namespace UnityEditor.EnvTimelineSimple
 
         void OnGUI()
         {
+            SyncCoreProperties();
+
             DrawHeaderBanner();
             DrawDataSelector();
 
@@ -879,7 +275,7 @@ namespace UnityEditor.EnvTimelineSimple
                 return;
             }
 
-            float bottomReserved = 160f; // 增加底部预留空间以确保按钮完全可见
+            float bottomReserved = 160f;
             float scrollHeight = position.height - GUILayoutUtility.GetLastRect().yMax - bottomReserved - 10f;
             if (scrollHeight < 100f) scrollHeight = 100f;
 
@@ -911,6 +307,9 @@ namespace UnityEditor.EnvTimelineSimple
             }
         }
 
+        // ============================================================
+        // UI 绘制方法
+        // ============================================================
         void DrawHeaderBanner()
         {
             Rect r = GUILayoutUtility.GetRect(0, 28, GUILayout.ExpandWidth(true));
@@ -988,98 +387,27 @@ namespace UnityEditor.EnvTimelineSimple
             }
         }
 
+        // ---- 壳包装方法：通过反射调用核心 ----
+
         void CreateNewTimelineInScene()
         {
-            GameObject go = new GameObject("EnvironmentTimeline");
-            data = go.AddComponent<EnvironmentTimelineData>();
-            var controller = go.AddComponent<EnvironmentTimelineController>();
-
-            Undo.RegisterCreatedObjectUndo(go, "Create Timeline");
-            Selection.activeGameObject = go;
-
-            EnvTimeSimpleDebug.Log($"[EnvTimeline] 已创建新的 Timeline 物体: {go.name}");
+            data = core.CreateNewTimelineInScene();
         }
 
-        bool IsProbeUsedByOtherNode(ReflectionProbe probe, int excludeIndex, out int usedByIndex)
+        void AddNodeAtTime(float time)
         {
-            usedByIndex = -1;
-            if (probe == null || data == null) return false;
-
-            for (int i = 0; i < data.nodes.Count; i++)
-            {
-                if (i == excludeIndex) continue;
-                if (data.nodes[i].mainProbe == probe)
-                {
-                    usedByIndex = i;
-                    return true;
-                }
-            }
-            return false;
+            if (data == null) return;
+            selectedNodeIndex = core.AddNodeAtTime(time);
         }
 
-        HashSet<int> GetDuplicateProbeNodeIndices()
+        void ApplyPreview()
         {
-            var set = new HashSet<int>();
-            if (data == null) return set;
-
-            var map = new Dictionary<ReflectionProbe, int>();
-            for (int i = 0; i < data.nodes.Count; i++)
-            {
-                var p = data.nodes[i].mainProbe;
-                if (p == null) continue;
-                if (map.TryGetValue(p, out int first))
-                {
-                    set.Add(first);
-                    set.Add(i);
-                }
-                else
-                {
-                    map[p] = i;
-                }
-            }
-            return set;
+            if (data == null) return;
+            core.ApplyPreview(previewTime);
+            SceneView.RepaintAll();
         }
 
-        /// <summary>
-        /// 判断 Probe 是否自带 Cubemap（Custom 模式且 cubemap 不为 null 且 cubemap 名不含 Baked 前缀）。
-        /// 自带 Cubemap 的 Probe 不支持 Bake 环境球。
-        /// 工具烘焙的 cubemap（名含 Baked 前缀）允许重新烘焙。
-        /// </summary>
-        bool IsProbeSelfContained(ReflectionProbe probe)
-        {
-            if (probe == null) return false;
-
-            // 仅 Custom 模式 + cubemap 不为 null 时检查
-            if (probe.mode != ReflectionProbeMode.Custom || probe.customBakedTexture == null)
-                return false;
-
-            // cubemap 名含 Baked 前缀 → 工具烘焙的，允许重新烘焙
-            if (!string.IsNullOrEmpty(cubemapPrefix)
-                && probe.customBakedTexture.name.StartsWith(cubemapPrefix, StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            // Custom 模式 + cubemap 不为 null + 名不含 Baked 前缀 → 用户自带的，不支持 Bake
-            return true;
-        }
-
-        bool ValidateNoDuplicateProbes()
-        {
-            var dupSet = GetDuplicateProbeNodeIndices();
-            if (dupSet.Count > 0)
-            {
-                var names = new List<string>();
-                foreach (var idx in dupSet)
-                    names.Add($"  • [{idx}] {data.nodes[idx].nodeName}  →  {data.nodes[idx].mainProbe.name}");
-
-                EditorUtility.DisplayDialog("⛔ 无法烘焙：检测到重复 Probe",
-                    "以下节点使用了重复的主 ReflectionProbe，请先修正：\n\n" +
-                    string.Join("\n", names) +
-                    "\n\n每个节点必须使用不同的主 ReflectionProbe。",
-                    "确定");
-                return false;
-            }
-            return true;
-        }
+        // ---- Cubemap 设置 ----
 
         void DrawCubemapSettings()
         {
@@ -1101,6 +429,8 @@ namespace UnityEditor.EnvTimelineSimple
             EditorGUILayout.EndVertical();
         }
 
+        // ---- 时间轴 ----
+
         void DrawTimeline()
         {
             if (data == null) return;
@@ -1121,9 +451,8 @@ namespace UnityEditor.EnvTimelineSimple
             }
 
             Event e = Event.current;
-            var dupSet = GetDuplicateProbeNodeIndices();
+            var dupSet = core.GetDuplicateProbeNodeIndices();
 
-            // ★ 绘制 BlendZone 混合区域（在节点下方）
             DrawBlendZonesOnTimeline(e);
 
             if (e.type == EventType.MouseDown &&
@@ -1228,7 +557,7 @@ namespace UnityEditor.EnvTimelineSimple
         }
 
         // ============================================================
-        // ★ BlendZone 时间轴可视化
+        // BlendZone 时间轴可视化
         // ============================================================
         void DrawBlendZonesOnTimeline(Event e)
         {
@@ -1236,16 +565,11 @@ namespace UnityEditor.EnvTimelineSimple
 
             for (int i = 0; i < data.nodes.Count; i++)
             {
-                // 节点 i 的 blendZone 定义了从【前一个节点】过渡到【节点 i】的混合区域
-                // 但第一个节点没有前一个节点，所以从 i=1 开始
-                // 实际上需要看循环情况：如果 loop 且 !holdAtEnd，最后一个节点也有到第一个的过渡
                 int fromIdx = i - 1;
                 int toIdx = i;
 
-                // 常规情况：fromIdx < 0 时跳过
                 if (fromIdx < 0)
                 {
-                    // 循环模式：最后一个节点过渡到第一个节点
                     if (data.loop && !data.holdAtEnd && data.nodes.Count >= 2)
                     {
                         fromIdx = data.nodes.Count - 1;
@@ -1266,16 +590,12 @@ namespace UnityEditor.EnvTimelineSimple
             var bz = toNode.blendZone;
             if (bz == null || !bz.enabled) return;
 
-            // 计算两节点在时间轴上的 x 坐标
             float fromX, toX;
             if (isWrap)
             {
-                // 循环过渡：from 在末尾，to 在开头
                 fromX = timelineRect.x + timelineRect.width * Mathf.Clamp01(fromNode.time / data.totalDuration);
                 toX = timelineRect.x + timelineRect.width * Mathf.Clamp01(toNode.time / data.totalDuration);
-                // 如果 to 在 from 左边，说明跨越了时间轴末尾
-                // 这种情况绘制起来比较复杂，简化为只绘制可见部分
-                if (toX <= fromX) toX = timelineRect.x + timelineRect.width; // 延伸到右边缘
+                if (toX <= fromX) toX = timelineRect.x + timelineRect.width;
             }
             else
             {
@@ -1283,7 +603,7 @@ namespace UnityEditor.EnvTimelineSimple
                 toX = timelineRect.x + timelineRect.width * Mathf.Clamp01(toNode.time / data.totalDuration);
             }
 
-            if (toX <= fromX + 2f) return; // 太窄不绘制
+            if (toX <= fromX + 2f) return;
 
             float gap = toX - fromX;
             float s = Mathf.Clamp01(bz.start);
@@ -1294,23 +614,18 @@ namespace UnityEditor.EnvTimelineSimple
             float blendEndX = fromX + gap * en;
             float blendWidth = blendEndX - blendStartX;
 
-            // 绘制混合区域背景（半透明紫色）
             Rect blendRect = new Rect(blendStartX, timelineRect.y + 4, blendWidth, TIMELINE_HEIGHT - 32);
             EditorGUI.DrawRect(blendRect, CLR_BLEND_ZONE);
 
-            // 绘制混合区域边界线
             EditorGUI.DrawRect(new Rect(blendStartX, timelineRect.y + 4, 2, TIMELINE_HEIGHT - 32), CLR_BLEND_EDGE);
             EditorGUI.DrawRect(new Rect(blendEndX - 1, timelineRect.y + 4, 2, TIMELINE_HEIGHT - 32), CLR_BLEND_EDGE);
 
-            // 绘制 SH 混合曲线可视化（在混合区域内绘制小曲线）
             DrawBlendCurveMini(blendRect, bz.shBlendCurve);
 
-            // 绘制 Probe 切换瞄点
             float switchLocalT = Mathf.Clamp01(bz.probeSwitchPoint);
             float switchRawT = Mathf.Lerp(s, en, switchLocalT);
             float switchX = fromX + gap * switchRawT;
 
-            // Probe 平滑宽度区域
             float smoothW = Mathf.Clamp01(bz.probeSwitchSmoothWidth) * (en - s) * 0.5f;
             if (smoothW > 0.001f)
             {
@@ -1320,22 +635,18 @@ namespace UnityEditor.EnvTimelineSimple
                 EditorGUI.DrawRect(smoothRect, CLR_PROBE_SMOOTH);
             }
 
-            // 瞄点竖线（红色）
             Rect switchRect = new Rect(switchX - 1, timelineRect.y + 2, 3, TIMELINE_HEIGHT - 28);
             EditorGUI.DrawRect(switchRect, CLR_PROBE_SWITCH);
 
-            // 瞄点小三角形标记
             Rect triRect = new Rect(switchX - 5, timelineRect.y + 2, 10, 6);
             EditorGUI.DrawRect(triRect, CLR_PROBE_SWITCH);
 
-            // 标签
             GUI.Label(new Rect(blendStartX, timelineRect.y + TIMELINE_HEIGHT - 26, blendWidth, 12),
                 "⟷", EditorStyles.miniLabel);
 
             // ===== 拖拽交互 =====
             bool isThisNodeSelected = (toIdx == selectedNodeIndex);
 
-            // 拖拽混合区域起始边界
             Rect startHandle = new Rect(blendStartX - 4, timelineRect.y + 4, 8, TIMELINE_HEIGHT - 32);
             EditorGUIUtility.AddCursorRect(startHandle, MouseCursor.ResizeHorizontal);
             if (isThisNodeSelected && e.type == EventType.MouseDown && startHandle.Contains(e.mousePosition))
@@ -1345,7 +656,6 @@ namespace UnityEditor.EnvTimelineSimple
                 e.Use();
             }
 
-            // 拖拽混合区域结束边界
             Rect endHandle = new Rect(blendEndX - 4, timelineRect.y + 4, 8, TIMELINE_HEIGHT - 32);
             EditorGUIUtility.AddCursorRect(endHandle, MouseCursor.ResizeHorizontal);
             if (isThisNodeSelected && e.type == EventType.MouseDown && endHandle.Contains(e.mousePosition))
@@ -1355,7 +665,6 @@ namespace UnityEditor.EnvTimelineSimple
                 e.Use();
             }
 
-            // 拖拽 Probe 切换瞄点
             Rect switchHandle = new Rect(switchX - 6, timelineRect.y + 2, 12, TIMELINE_HEIGHT - 28);
             EditorGUIUtility.AddCursorRect(switchHandle, MouseCursor.MoveArrow);
             if (isThisNodeSelected && e.type == EventType.MouseDown && switchHandle.Contains(e.mousePosition))
@@ -1365,7 +674,6 @@ namespace UnityEditor.EnvTimelineSimple
                 e.Use();
             }
 
-            // 处理拖拽
             if (blendDragMode != BlendDragMode.None && blendDragNodeIndex == toIdx)
             {
                 if (e.type == EventType.MouseDrag)
@@ -1404,7 +712,6 @@ namespace UnityEditor.EnvTimelineSimple
 
         void DrawBlendCurveMini(Rect rect, BlendCurveType curve)
         {
-            // 在混合区域内绘制 SH 混合曲线缩略图
             int steps = 24;
             Color curveColor = new Color(0.8f, 0.5f, 1f, 0.6f);
             for (int i = 0; i < steps; i++)
@@ -1437,14 +744,13 @@ namespace UnityEditor.EnvTimelineSimple
         }
 
         // ============================================================
-        // ★ BlendZone Inspector 面板
+        // BlendZone Inspector 面板
         // ============================================================
         void DrawBlendZoneInspector(EnvTimeNode node)
         {
             if (node == null || node.blendZone == null) return;
             var bz = node.blendZone;
 
-            // 检查是否有前一个节点
             int nodeIdx = data.nodes.IndexOf(node);
             bool hasPrevNode = nodeIdx > 0 || (data.loop && !data.holdAtEnd && data.nodes.Count >= 2);
 
@@ -1472,7 +778,6 @@ namespace UnityEditor.EnvTimelineSimple
 
             EditorGUILayout.Space(4);
 
-            // 混合区域范围
             EditorGUILayout.LabelField("混合区域范围 (占两节点间距的百分比)", EditorStyles.miniBoldLabel);
             EditorGUILayout.BeginHorizontal();
             bz.start = EditorGUILayout.Slider("起始", bz.start, 0f, 1f);
@@ -1485,7 +790,6 @@ namespace UnityEditor.EnvTimelineSimple
                 if (bz.start >= bz.end) bz.end = Mathf.Min(1f, bz.start + 0.01f);
             }
 
-            // 快捷按钮
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button("居中 (0.3~0.7)", GUILayout.Width(120)))
             {
@@ -1503,7 +807,6 @@ namespace UnityEditor.EnvTimelineSimple
 
             EditorGUILayout.Space(4);
 
-            // Probe 切换瞄点
             DrawSectionHeader("ReflectionProbe 切换瞄点", CLR_PROBE_SWITCH, "🎯");
             bz.probeSwitchPoint = EditorGUILayout.Slider(
                 new GUIContent("切换位置", "在混合区域 [start, end] 内的归一化位置。\n" +
@@ -1526,13 +829,11 @@ namespace UnityEditor.EnvTimelineSimple
 
             EditorGUILayout.Space(4);
 
-            // SH 混合曲线
             DrawSectionHeader("SH/LightProbe 混合曲线", CLR_OK, "📈");
             bz.shBlendCurve = (BlendCurveType)EditorGUILayout.EnumPopup(
                 new GUIContent("曲线类型", "SH/LightProbe 在混合区域内的插值曲线类型"),
                 bz.shBlendCurve);
 
-            // 绘制曲线预览
             Rect curveRect = GUILayoutUtility.GetRect(0, 40, GUILayout.ExpandWidth(true));
             EditorGUI.DrawRect(curveRect, new Color(0.15f, 0.15f, 0.2f));
             DrawBlendCurveMini(curveRect, bz.shBlendCurve);
@@ -1667,39 +968,6 @@ namespace UnityEditor.EnvTimelineSimple
             EditorGUILayout.EndHorizontal();
         }
 
-        void ApplyPreview()
-        {
-            if (data == null) return;
-
-            var ctrl = data.GetComponent<EnvironmentTimelineController>();
-            if (ctrl != null)
-            {
-                ctrl.currentTime = previewTime;
-                ctrl.ApplyAtCurrentTime();
-                SceneView.RepaintAll();
-            }
-            else
-            {
-                EnvTimeSimpleDebug.LogWarning($"物体 '{data.gameObject.name}' 上未找到 EnvironmentTimelineController 组件");
-            }
-        }
-
-        void AddNodeAtTime(float time)
-        {
-            if (data == null) return;
-
-            Undo.RecordObject(data, "Add Time Node");
-            var node = new EnvTimeNode
-            {
-                nodeName = "Node_" + data.nodes.Count,
-                time = time
-            };
-            data.nodes.Add(node);
-            data.SortByTime();
-            selectedNodeIndex = data.nodes.IndexOf(node);
-            EditorUtility.SetDirty(data);
-        }
-
         void DrawNodeList()
         {
             if (data == null) return;
@@ -1714,7 +982,7 @@ namespace UnityEditor.EnvTimelineSimple
             GUI.backgroundColor = Color.white;
             EditorGUILayout.EndHorizontal();
 
-            var dupSet = GetDuplicateProbeNodeIndices();
+            var dupSet = core.GetDuplicateProbeNodeIndices();
             if (dupSet.Count > 0)
             {
                 EditorGUILayout.HelpBox(
@@ -1813,7 +1081,7 @@ namespace UnityEditor.EnvTimelineSimple
                 "主 Probe", node.mainProbe, typeof(ReflectionProbe), true);
             if (EditorGUI.EndChangeCheck())
             {
-                if (newProbe != null && IsProbeUsedByOtherNode(newProbe, selectedNodeIndex, out int usedBy))
+                if (newProbe != null && core.IsProbeUsedByOtherNode(newProbe, selectedNodeIndex, out int usedBy))
                 {
                     EditorUtility.DisplayDialog("⛔ 不允许重复",
                         $"该 ReflectionProbe 已被节点 [{usedBy}] {data.nodes[usedBy].nodeName} 使用。\n\n" +
@@ -1828,7 +1096,7 @@ namespace UnityEditor.EnvTimelineSimple
             }
 
             if (node.mainProbe != null &&
-                IsProbeUsedByOtherNode(node.mainProbe, selectedNodeIndex, out int dupIdx))
+                core.IsProbeUsedByOtherNode(node.mainProbe, selectedNodeIndex, out int dupIdx))
             {
                 EditorGUILayout.HelpBox(
                     $"⛔ 此 Probe 与节点 [{dupIdx}] {data.nodes[dupIdx].nodeName} 重复！\n" +
@@ -1867,7 +1135,7 @@ namespace UnityEditor.EnvTimelineSimple
                 }
 
                 // 判断是否自带 cubemap
-                bool selfContained = IsProbeSelfContained(node.mainProbe);
+                bool selfContained = core.IsProbeSelfContained(node.mainProbe);
                 if (selfContained)
                 {
                     var scStyle = new GUIStyle(EditorStyles.label)
@@ -1951,16 +1219,16 @@ namespace UnityEditor.EnvTimelineSimple
             GUI.backgroundColor = CLR_OK;
             if (GUILayout.Button("▶ 烘焙此节点 SH", GUILayout.Height(28)))
             {
-                BakeNodeSH(node);
+                core.BakeNodeSH(node);
             }
 
             // 自带 cubemap 的 Probe 不支持 Bake
-            bool probeSelfContained = IsProbeSelfContained(node.mainProbe);
+            bool probeSelfContained = core.IsProbeSelfContained(node.mainProbe);
             GUI.backgroundColor = probeSelfContained ? CLR_MUTED : CLR_WARN;
             GUI.enabled = !probeSelfContained;
             if (GUILayout.Button(probeSelfContained ? "🔥 烘焙 Probe (不支持)" : "🔥 烘焙 Probe", GUILayout.Height(28)))
             {
-                BakeReflectionProbe(node);
+                core.BakeReflectionProbe(node);
             }
             GUI.enabled = true;
             GUI.backgroundColor = Color.white;
@@ -1974,7 +1242,7 @@ namespace UnityEditor.EnvTimelineSimple
                 GUI.enabled = (existCube != null);
                 if (GUILayout.Button("🔄 单独处理环境球（半球映射）", GUILayout.Height(24)))
                 {
-                    ProcessNodeHemisphereMirror(node);
+                    core.ProcessNodeHemisphereMirror(node);
                 }
                 GUI.enabled = true;
                 GUI.backgroundColor = Color.white;
@@ -2046,7 +1314,7 @@ namespace UnityEditor.EnvTimelineSimple
                 "启用后，烘焙 ReflectionProbe 时会在 Baked 光源位置创建临时自发光代理物体（小球/面板），\n" +
                 "使 Baked 光源在 Cubemap 中产生镜面高光。\n" +
                 "Point/Spot 光源 → 自发光小球，Area 光源 → 自发光半透明面板。\n" ,
-                MessageType.Info);//+ "原理参考：github.com/zulubo/SpecularProbes"
+                MessageType.Info);
 
             node.enableSpecularLightBaking = EditorGUILayout.Toggle(
                 new GUIContent("启用镜面高光烘焙",
@@ -2202,9 +1470,9 @@ namespace UnityEditor.EnvTimelineSimple
                 EditorGUILayout.Space(4);
                 DrawSectionHeader("Custom SH 数据", CLR_OK, "✨");
                 EditorGUI.indentLevel++;
-                EditorGUILayout.LabelField("SHAr", FormatV4(node.customSH.SHAr));
-                EditorGUILayout.LabelField("SHAg", FormatV4(node.customSH.SHAg));
-                EditorGUILayout.LabelField("SHAb", FormatV4(node.customSH.SHAb));
+                EditorGUILayout.LabelField("SHAr", EnvTimelineSimpleProvider.FormatV4(node.customSH.SHAr));
+                EditorGUILayout.LabelField("SHAg", EnvTimelineSimpleProvider.FormatV4(node.customSH.SHAg));
+                EditorGUILayout.LabelField("SHAb", EnvTimelineSimpleProvider.FormatV4(node.customSH.SHAb));
                 EditorGUI.indentLevel--;
             }
 
@@ -2215,7 +1483,7 @@ namespace UnityEditor.EnvTimelineSimple
         }
 
         // ============================================================
-        // 🎨 底部固定操作栏（一键烘焙仅烘焙 SH，不烘焙 ReflectionProbe）
+        // 底部固定操作栏
         // ============================================================
         void DrawBottomActions()
         {
@@ -2223,7 +1491,7 @@ namespace UnityEditor.EnvTimelineSimple
 
             EditorGUILayout.Space(4);
 
-            var dupSet = GetDuplicateProbeNodeIndices();
+            var dupSet = core.GetDuplicateProbeNodeIndices();
             bool hasDup = dupSet.Count > 0;
 
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
@@ -2239,13 +1507,16 @@ namespace UnityEditor.EnvTimelineSimple
             GUI.backgroundColor = hasDup ? CLR_MUTED : CLR_OK;
             if (GUILayout.Button("▶ 一键烘焙所有节点 SH", GUILayout.Height(34)))
             {
-                BakeAllNodes();
+                core.BakeAllNodes();
             }
             GUI.backgroundColor = Color.white;
 
             EditorGUILayout.EndVertical();
         }
 
+        // ============================================================
+        // 拖拽处理
+        // ============================================================
         void HandleProbeDrop(Rect r, EnvTimeNode node)
         {
             var e = Event.current;
@@ -2302,780 +1573,6 @@ namespace UnityEditor.EnvTimelineSimple
                             list.Add(go);
                     e.Use();
                 }
-            }
-        }
-
-        // ============================================================
-        // 🆕 让用户选择保存目录（统一工具方法）
-        // ============================================================
-        const string PREF_LAST_BAKE_FOLDER = "BYTools_EnvTimeline_LastBakeFolder";
-
-        bool TryPickAssetsFolder(string title, out string assetRelativeFolder)
-        {
-            assetRelativeFolder = null;
-
-            // 读取上次使用的烘焙目录，优先打开该位置以减少重复操作
-            string lastRelFolder = EditorPrefs.GetString(PREF_LAST_BAKE_FOLDER, "Assets");
-            string startDir = lastRelFolder;
-            if (lastRelFolder.StartsWith("Assets"))
-                startDir = Application.dataPath + lastRelFolder.Substring("Assets".Length);
-            if (!Directory.Exists(startDir))
-                startDir = Application.dataPath;
-
-            string abs = EditorUtility.OpenFolderPanel(title, startDir, "");
-            if (string.IsNullOrEmpty(abs))
-                return false;
-
-            if (!abs.StartsWith(Application.dataPath))
-            {
-                EditorUtility.DisplayDialog("错误", "请选择 Assets 文件夹内的路径", "确定");
-                return false;
-            }
-            assetRelativeFolder = "Assets" + abs.Substring(Application.dataPath.Length);
-            if (!AssetDatabase.IsValidFolder(assetRelativeFolder))
-            {
-                Directory.CreateDirectory(assetRelativeFolder);
-                AssetDatabase.Refresh();
-            }
-
-            // 记忆本次选择的目录，下次烘焙时优先打开
-            EditorPrefs.SetString(PREF_LAST_BAKE_FOLDER, assetRelativeFolder);
-
-            return true;
-        }
-
-        // ============================================================
-        // 🆕 创建一张默认的 Cube 类型 Texture（图片资源）
-        // 6 面横向布局: width = size*6, height = size
-        // 导入设置: TextureType=Default, Shape=Cube, Mapping=Auto,
-        //           ConvolutionType=Specular, sRGB=true, GenerateMipMaps=true
-        // ============================================================
-        Texture CreateDefaultCubeTexture(string folder, string fileNameNoExt)
-        {
-            int size = defaultCubemapSize;
-            int width = size * 6;
-            int height = size;
-
-            // 用 PNG 创建默认灰图（sRGB）
-            Texture2D tmp = new Texture2D(width, height, TextureFormat.RGBA32, false);
-            Color baseCol = new Color(0.2f, 0.2f, 0.2f, 1f);
-            Color[] pixels = new Color[width * height];
-            for (int i = 0; i < pixels.Length; i++) pixels[i] = baseCol;
-            tmp.SetPixels(pixels);
-            tmp.Apply();
-
-            byte[] png = tmp.EncodeToPNG();
-            Object.DestroyImmediate(tmp);
-
-            string fullPath = $"{folder}/{fileNameNoExt}.png";
-            File.WriteAllBytes(fullPath, png);
-            AssetDatabase.ImportAsset(fullPath, ImportAssetOptions.ForceSynchronousImport);
-
-            // 设置导入参数：Cube + Default + Specular Glossy
-            var importer = AssetImporter.GetAtPath(fullPath) as TextureImporter;
-            if (importer != null)
-            {
-                importer.textureType = TextureImporterType.Default;
-                importer.textureShape = TextureImporterShape.TextureCube;
-                importer.generateCubemap = TextureImporterGenerateCubemap.AutoCubemap;
-                importer.sRGBTexture = true;
-                importer.alphaSource = TextureImporterAlphaSource.FromInput;
-                importer.alphaIsTransparency = true;
-                importer.mipmapEnabled = true;
-                importer.borderMipmap = false;
-                importer.isReadable = false;
-                importer.npotScale = TextureImporterNPOTScale.ToNearest;
-
-                // ConvolutionType = Specular(Glossy)
-                var so = new SerializedObject(importer);
-                var convProp = so.FindProperty("m_ConvolutionType");
-                if (convProp != null) convProp.intValue = 1; // 0=None,1=Specular,2=Diffuse
-                var fixupProp = so.FindProperty("m_SeamlessCubemap");
-                if (fixupProp != null) fixupProp.boolValue = true;
-                so.ApplyModifiedProperties();
-
-                importer.SaveAndReimport();
-            }
-
-            AssetDatabase.Refresh();
-            return AssetDatabase.LoadAssetAtPath<Texture>(fullPath);
-        }
-
-        // ============================================================
-        // 确保 Custom 模式 Probe 拥有 Cubemap（缺失则自动创建占位图片）
-        // 注意：新烘焙流程中 Custom 模式已支持直接烘焙（见 BakeReflectionProbe），
-        //       此方法保留用于需要创建占位 Cubemap 图片的场景。
-        // ============================================================
-        bool EnsureProbeCubemap(EnvTimeNode node, string saveFolder, ref int counter)
-        {
-            if (node.mainProbe == null) return false;
-
-            // 非 Custom 模式不在此处理（由烘焙流程负责）
-            if (node.mainProbe.mode != ReflectionProbeMode.Custom)
-                return true;
-
-            // Custom 模式已有 Cubemap
-            if (node.mainProbe.customBakedTexture != null)
-                return true;
-
-            string cubemapName = $"{cubemapPrefix}{node.mainProbe.name}_{counter:D4}";
-            counter++;
-
-            Texture tex = CreateDefaultCubeTexture(saveFolder, cubemapName);
-            if (tex == null)
-            {
-                EnvTimeSimpleDebug.LogError($"[EnvTimeline] 无法为 '{node.mainProbe.name}' 创建 Cubemap 图片");
-                return false;
-            }
-
-            node.mainProbe.customBakedTexture = tex;
-            EditorUtility.SetDirty(node.mainProbe);
-
-            EnvTimeSimpleDebug.Log($"[EnvTimeline] 为 Probe '{node.mainProbe.name}' 创建 Cubemap 图片: {AssetDatabase.GetAssetPath(tex)}");
-            return true;
-        }
-
-        // ============================================================
-        // 获取下一个Baked文件序号（按目录中现有Baked_*.exr文件自动递增）
-        // ============================================================
-        int GetNextBakedFileIndex(string folderPath)
-        {
-            if (!AssetDatabase.IsValidFolder(folderPath))
-                return 1;
-
-            // 获取目录下所有文件
-            string[] existingFiles = AssetDatabase.GetAllAssetPaths()
-                .Where(path => path.StartsWith(folderPath + "/") && 
-                             path.Contains("Baked_") && 
-                             path.EndsWith(".exr"))
-                .ToArray();
-
-            if (existingFiles.Length == 0)
-                return 1;
-
-            // 找出最大的序号
-            int maxIndex = 0;
-            foreach (string filePath in existingFiles)
-            {
-                string fileName = System.IO.Path.GetFileNameWithoutExtension(filePath);
-                if (fileName.StartsWith("Baked_"))
-                {
-                    string numberPart = fileName.Substring("Baked_".Length);
-                    if (int.TryParse(numberPart, out int index))
-                    {
-                        maxIndex = Mathf.Max(maxIndex, index);
-                    }
-                }
-            }
-
-            return maxIndex + 1;
-        }
-
-        // ============================================================
-        // 单节点 SH 烘焙
-        // ============================================================
-        void BakeNodeSH(EnvTimeNode node)
-        {
-            if (node.mainProbe == null)
-            {
-                EditorUtility.DisplayDialog("错误", "节点未指定主 ReflectionProbe", "确定");
-                return;
-            }
-
-            if (IsProbeUsedByOtherNode(node.mainProbe, data.nodes.IndexOf(node), out int dupIdx))
-            {
-                EditorUtility.DisplayDialog("⛔ 无法烘焙",
-                    $"该 Probe 与节点 [{dupIdx}] {data.nodes[dupIdx].nodeName} 重复，请先修正！",
-                    "确定");
-                return;
-            }
-
-            Cubemap cube = node.GetMainCubemap();
-            if (cube == null)
-            {
-                if (EditorUtility.DisplayDialog("Probe 未烘焙",
-                    "主 Probe 尚未烘焙，是否立即烘焙？", "立即烘焙", "取消"))
-                {
-                    BakeReflectionProbe(node);
-                    cube = node.GetMainCubemap();
-                }
-                if (cube == null) return;
-            }
-
-            // ★ 确保 Cubemap 可读（临时修改导入设置，SH 投影后恢复）
-            // 烘焙后的 .exr 默认 isReadable=false，会导致 GetPixels 抛异常，
-            // 回退到 CopyViaRenderTexture 后因不同尺寸只 Clear 不拷贝 → 全黑 → SH 全零
-            string cubeAssetPath = AssetDatabase.GetAssetPath(cube);
-            bool madeReadable = false;
-            if (!string.IsNullOrEmpty(cubeAssetPath))
-            {
-                var cubeImporter = AssetImporter.GetAtPath(cubeAssetPath) as TextureImporter;
-                if (cubeImporter != null && !cubeImporter.isReadable)
-                {
-                    cubeImporter.isReadable = true;
-                    cubeImporter.SaveAndReimport();
-                    AssetDatabase.Refresh();
-                    cube = AssetDatabase.LoadAssetAtPath<Cubemap>(cubeAssetPath);
-                    if (cube == null)
-                    {
-                        EnvTimeSimpleDebug.LogError("[EnvTimeline] 无法重新加载可读 Cubemap: " + cubeAssetPath);
-                        return;
-                    }
-                    madeReadable = true;
-                }
-            }
-
-            float clamp = node.useHDRClamp ? node.hdrClampMax : 0f;
-            float[,] coeffs = CubemapSHProjector.ProjectCubemapToSH(
-                cube, node.sampleResolution, node.rotationY, clamp);
-
-            // 恢复原始不可读状态（节省运行时内存）
-            if (madeReadable)
-            {
-                var restoreImporter = AssetImporter.GetAtPath(cubeAssetPath) as TextureImporter;
-                if (restoreImporter != null)
-                {
-                    restoreImporter.isReadable = false;
-                    restoreImporter.SaveAndReimport();
-                }
-            }
-
-            if (coeffs == null)
-            {
-                EnvTimeSimpleDebug.LogError("[EnvTimeline] SH 投影失败：" + cube.name);
-                return;
-            }
-
-            // 诊断：检查 SH 系数是否全零
-            bool allZero = true;
-            for (int i = 0; i < 9 && allZero; i++)
-                for (int c = 0; c < 3 && allZero; c++)
-                    if (Mathf.Abs(coeffs[i, c]) > 1e-8f) allZero = false;
-            if (allZero)
-            {
-                EnvTimeSimpleDebug.LogWarning($"[EnvTimeline] 节点 [{node.nodeName}] SH 烘焙结果全零！Cubemap 可能为纯黑或像素读取失败: {cube.name}");
-            }
-
-            if (node.exposure != 1f)
-            {
-                for (int i = 0; i < 9; i++)
-                    for (int c = 0; c < 3; c++) coeffs[i, c] *= node.exposure;
-            }
-
-            CubemapSHProjector.ConvertToUnityFormat(coeffs,
-                out var ar, out var ag, out var ab,
-                out var br, out var bg, out var bb, out var cc);
-
-            Undo.RecordObject(data, "Bake Node SH");
-            node.customSH.SHAr = ar;
-            node.customSH.SHAg = ag;
-            node.customSH.SHAb = ab;
-            node.customSH.SHBr = br;
-            node.customSH.SHBg = bg;
-            node.customSH.SHBb = bb;
-            node.customSH.SHC  = cc;
-            EditorUtility.SetDirty(data);
-
-            EnvTimeSimpleDebug.Log($"<color=#7CFC00>[EnvTimeline]</color> 节点 [{node.nodeName}] SH 烘焙完成 (来自 Probe '{node.mainProbe.name}')");
-        }
-
-        // ============================================================
-        // 单 Probe 烘焙（最终都保存为 Custom 模式）
-        //   • Custom  模式：临时切换到 Baked 模式烘焙，再切回 Custom，赋值 customBakedTexture
-        //   • Baked   模式：按现有流程烘焙，最后切换到 Custom 并赋值 customBakedTexture
-        //   • Realtime 模式：同 Baked
-        // ============================================================
-        void BakeReflectionProbe(EnvTimeNode node)
-        {
-            if (node.mainProbe == null)
-            {
-                EditorUtility.DisplayDialog("错误", "节点未指定主 ReflectionProbe", "确定");
-                return;
-            }
-
-            // 自带 cubemap 的 Probe 不支持 Bake
-            if (IsProbeSelfContained(node.mainProbe))
-            {
-                EditorUtility.DisplayDialog("不支持 Bake",
-                    $"Probe '{node.mainProbe.name}' 自带 Cubemap（Custom 模式且 cubemap 名不含 Baked 前缀）。\n"
-                    + "不支持 Bake 环境球。如需重新烘焙，请先清除 Custom Cubemap。\n"
-                    + "（cubemap 名含 Baked 前缀的 Probe 允许重新烘焙）",
-                    "确定");
-                return;
-            }
-
-            var probe = node.mainProbe;
-            var originalMode = probe.mode;
-
-            // ---- 记录 Custom 模式现有纹理路径（用于同目录同名称替换）----
-            string existingCustomPath = null;
-            if (originalMode == ReflectionProbeMode.Custom && probe.customBakedTexture != null)
-            {
-                existingCustomPath = AssetDatabase.GetAssetPath(probe.customBakedTexture);
-            }
-
-            // ---- 确定烘焙文件路径 ----
-            string filename;
-            if (!string.IsNullOrEmpty(existingCustomPath))
-            {
-                // Custom 模式有现有纹理：使用相同目录和基础名称生成 .exr 替换
-                string dir = Path.GetDirectoryName(existingCustomPath)?.Replace('\\', '/');
-                string baseName = Path.GetFileNameWithoutExtension(existingCustomPath);
-                filename = $"{dir}/{baseName}.exr";
-                // 记忆该目录，便于后续烘焙优先打开
-                if (!string.IsNullOrEmpty(dir))
-                    EditorPrefs.SetString(PREF_LAST_BAKE_FOLDER, dir);
-            }
-            else
-            {
-                // 需要用户选择目录
-                if (!TryPickAssetsFolder(
-                        $"为 '{probe.name}' ({originalMode}) 选择烘焙保存目录",
-                        out string bakeFolder))
-                {
-                    EnvTimeSimpleDebug.Log("[EnvTimeline] 已取消烘焙");
-                    return;
-                }
-                int bakedFileIndex = GetNextBakedFileIndex(bakeFolder);
-                filename = $"{bakeFolder}/Baked_{bakedFileIndex:D3}.exr";
-            }
-
-            // ---- Custom 模式：临时切换到 Baked 模式进行烘焙 ----
-            bool wasCustom = (originalMode == ReflectionProbeMode.Custom);
-            Undo.RecordObject(probe, "Bake ReflectionProbe");
-            if (wasCustom)
-            {
-                probe.mode = ReflectionProbeMode.Baked;
-            }
-
-            bool bakeSuccess;
-            using (ReflectionProbeStaticScope.Create(node.reflectionProbeBakeTargets))
-            using (SpecularLightBakeScope.Create(node))
-            {
-                bakeSuccess = Lightmapping.BakeReflectionProbe(probe, filename);
-            }
-
-            // Custom 模式：切回 Custom
-            if (wasCustom)
-            {
-                probe.mode = ReflectionProbeMode.Custom;
-            }
-
-            if (bakeSuccess)
-            {
-                AssetDatabase.Refresh();
-                var bakedTex = AssetDatabase.LoadAssetAtPath<Cubemap>(filename);
-                if (bakedTex != null)
-                {
-                    // 最终都保存为 Custom 模式
-                    probe.mode = ReflectionProbeMode.Custom;
-                    probe.customBakedTexture = bakedTex;
-                    EditorUtility.SetDirty(probe);
-                }
-
-                // 半球映射后处理
-                if (node.enableHemisphereMirror)
-                {
-                    Cubemap processedCube = ProcessCubemapHemisphereMirror(filename, node.hemisphereAngle);
-                    if (processedCube != null)
-                    {
-                        probe.customBakedTexture = processedCube;
-                        EditorUtility.SetDirty(probe);
-                        EnvTimeSimpleDebug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {filename} (角度: {node.hemisphereAngle}°)");
-                    }
-                    else
-                    {
-                        EnvTimeSimpleDebug.LogWarning($"[EnvTimeline] 半球映射处理失败: {filename}");
-                    }
-                }
-
-                EnvTimeSimpleDebug.Log($"<color=#FFD700>[EnvTimeline]</color> Probe 烘焙完成: {filename} (最终模式: Custom)");
-                EditorUtility.DisplayDialog("✓ Probe 烘焙完成",
-                    $"已烘焙 '{probe.name}'\n保存到: {filename}\n已切换为 Custom 模式", "确定");
-            }
-            else
-            {
-                // 烘焙失败：恢复原始模式
-                probe.mode = originalMode;
-                EnvTimeSimpleDebug.LogError("[EnvTimeline] Probe 烘焙失败");
-                EditorUtility.DisplayDialog("错误", "Probe 烘焙失败，请查看 Console", "确定");
-            }
-        }
-
-        // ============================================================
-        // 一键烘焙所有节点 SH
-        //   • 不烘焙 ReflectionProbe，仅对已有有效反射球（Cubemap）的节点烘焙 SH
-        //   • 无 mainProbe 或 mainProbe 无有效 Cubemap 的节点将被跳过
-        // ============================================================
-        void BakeAllNodes()
-        {
-            if (data == null) return;
-
-            if (!ValidateNoDuplicateProbes()) return;
-
-            // 收集所有有有效反射球的节点
-            List<EnvTimeNode> validNodes = new List<EnvTimeNode>();
-            List<EnvTimeNode> skippedNodes = new List<EnvTimeNode>();
-            foreach (var node in data.nodes)
-            {
-                if (node.mainProbe != null && node.GetMainCubemap() != null)
-                    validNodes.Add(node);
-                else
-                    skippedNodes.Add(node);
-            }
-
-            if (validNodes.Count == 0)
-            {
-                EditorUtility.DisplayDialog("提示",
-                    "没有可烘焙 SH 的节点（所有节点均无有效的反射球 Cubemap）。\n"
-                    + "请先为节点指定 ReflectionProbe 并烘焙或指定 Cubemap。", "确定");
-                return;
-            }
-
-            if (skippedNodes.Count > 0)
-            {
-                EnvTimeSimpleDebug.Log($"[EnvTimeline] {skippedNodes.Count} 个节点无有效反射球，跳过 SH 烘焙："
-                    + string.Join(", ", skippedNodes.ConvertAll(n => n.nodeName)));
-            }
-
-            // ---- 烘焙所有有效节点的 SH ----
-            int ok = 0, fail = 0;
-            for (int i = 0; i < validNodes.Count; i++)
-            {
-                var node = validNodes[i];
-                EditorUtility.DisplayProgressBar("批量烘焙 SH",
-                    $"{node.nodeName} ({i + 1}/{validNodes.Count})",
-                    (float)i / validNodes.Count);
-
-                try
-                {
-                    BakeNodeSH(node);
-                    ok++;
-                }
-                catch (System.Exception ex)
-                {
-                    EnvTimeSimpleDebug.LogError($"[EnvTimeline] 节点 [{node.nodeName}] SH 烘焙失败: {ex.Message}");
-                    fail++;
-                }
-            }
-
-            EditorUtility.ClearProgressBar();
-
-            string summary = $"✓ SH 成功 {ok} 个";
-            if (fail > 0)
-                summary += $"，✗ SH 失败 {fail} 个";
-            if (skippedNodes.Count > 0)
-                summary += $"\n跳过 {skippedNodes.Count} 个无有效反射球的节点";
-
-            EditorUtility.DisplayDialog("批量烘焙完成", summary, "确定");
-        }
-
-        static string FormatV4(Vector4 v) =>
-            $"({v.x:F3}, {v.y:F3}, {v.z:F3}, {v.w:F3})";
-
-        // ============================================================
-        // 🌐 半球映射：将空半球用实景半球镜像填充
-        // ============================================================
-
-        /// <summary>
-        /// 对已烘焙的 Cubemap (.exr) 进行半球镜像后处理。
-        /// 将空半球（与 hemisphereAngle 相反方向）的像素用实景半球镜像填充，
-        /// 保存为同格式 EXR，保持原有导入设置。
-        /// </summary>
-        Cubemap ProcessCubemapHemisphereMirror(string exrPath, float hemisphereAngle)
-        {
-            if (string.IsNullOrEmpty(exrPath) || !File.Exists(exrPath))
-            {
-                EnvTimeSimpleDebug.LogError($"[EnvTimeline] EXR 文件不存在: {exrPath}");
-                return null;
-            }
-
-            // 1. 读取原始导入设置
-            var importer = AssetImporter.GetAtPath(exrPath) as TextureImporter;
-            bool origReadable = importer?.isReadable ?? false;
-            bool origSRGB = importer?.sRGBTexture ?? true;
-            bool origMipMaps = importer?.mipmapEnabled ?? true;
-            int origConvolution = 0;
-            bool origSeamless = false;
-            if (importer != null)
-            {
-                var so0 = new SerializedObject(importer);
-                var convProp0 = so0.FindProperty("m_ConvolutionType");
-                if (convProp0 != null) origConvolution = convProp0.intValue;
-                var seamProp0 = so0.FindProperty("m_SeamlessCubemap");
-                if (seamProp0 != null) origSeamless = seamProp0.boolValue;
-            }
-
-            // 2. 临时设为可读
-            if (importer != null && !origReadable)
-            {
-                importer.isReadable = true;
-                importer.SaveAndReimport();
-            }
-
-            // 3. 加载并读取像素
-            AssetDatabase.Refresh();
-            Cubemap sourceCube = AssetDatabase.LoadAssetAtPath<Cubemap>(exrPath);
-            if (sourceCube == null)
-            {
-                EnvTimeSimpleDebug.LogError($"[EnvTimeline] 无法加载 Cubemap: {exrPath}");
-                return null;
-            }
-
-            int size = sourceCube.width;
-            Color[][] facePixels = new Color[6][];
-            for (int face = 0; face < 6; face++)
-                facePixels[face] = sourceCube.GetPixels((CubemapFace)face);
-
-            sourceCube = null;
-
-            // 4. 计算镜像平面法线（过 Y 轴的垂直平面）
-            float rad = hemisphereAngle * Mathf.Deg2Rad;
-            Vector3 mirrorNormal = new Vector3(Mathf.Sin(rad), 0f, Mathf.Cos(rad));
-
-            // 5. 逐像素处理
-            Color[][] processedPixels = new Color[6][];
-            for (int face = 0; face < 6; face++)
-            {
-                processedPixels[face] = new Color[size * size];
-                for (int y = 0; y < size; y++)
-                {
-                    for (int x = 0; x < size; x++)
-                    {
-                        // float u = (x + 0.5f) / size * 2f - 1f;
-                        // float v = (y + 0.5f) / size * 2f - 1f;
-                        //Vector3 dir = CubemapSHProjector.GetCubemapDirection(face, u, v);
-                        float u = (x + 0.5f) / size * 2f - 1f;
-                        // GetPixels 返回的数据：y=0 在图像底部；
-                        // GetCubemapDirection 中 vAxis 多为 (0,-1,0)，v=+1 对应世界下方。
-                        // 因此像素行 y 需要转换为 v = -(row_normalized)
-                        
-                        float vRaw = (y + 0.5f) / size * 2f - 1f;
-                        // ±Y 面 (face 2, 3) 不翻转 v；其他面翻转
-                        float v = (face == 2 || face == 3) ? vRaw : -vRaw;
-                        Vector3 dir = CubemapSHProjector.GetCubemapDirection(face, u, v);
-
-                        float dot = Vector3.Dot(dir, mirrorNormal);
-                        int idx = y * size + x;
-
-                        if (dot < -0.0001f)
-                        {
-                            // 空半球：镜像方向并从实景半球采样
-                            Vector3 mirroredDir = dir - 2f * dot * mirrorNormal;
-                            processedPixels[face][idx] = SampleCubemapBilinear(facePixels, size, mirroredDir);
-                        }
-                        else
-                        {
-                            // 实景半球：保持原样
-                            processedPixels[face][idx] = facePixels[face][idx];
-                        }
-                    }
-                }
-            }
-
-            // 6. 创建横向条带 Texture2D 并编码为 EXR
-            Texture2D stripTex = new Texture2D(size * 6, size, TextureFormat.RGBA32, false);
-            for (int face = 0; face < 6; face++)
-            {
-                // 上下翻转 y：EncodeToEXR 与 GetPixels 的 y 约定相反，需要预翻转
-                Color[] flipped = new Color[size * size];
-                for (int y = 0; y < size; y++)
-                {
-                    int srcY = size - 1 - y;
-                    System.Array.Copy(processedPixels[face], srcY * size,
-                        flipped, y * size, size);
-                }
-                stripTex.SetPixels(face * size, 0, size, size, flipped);
-            }
-            stripTex.Apply();
-
-            byte[] exrBytes;
-            try
-            {
-                //exrBytes = stripTex.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat);
-                exrBytes = stripTex.EncodeToEXR();
-            }
-            catch (System.Exception e)
-            {
-                EnvTimeSimpleDebug.LogError($"[EnvTimeline] EXR 编码失败: {e.Message}");
-                Object.DestroyImmediate(stripTex);
-                return null;
-            }
-            Object.DestroyImmediate(stripTex);
-
-            if (exrBytes == null || exrBytes.Length == 0)
-            {
-                EnvTimeSimpleDebug.LogError("[EnvTimeline] EXR 编码返回空数据");
-                return null;
-            }
-
-            // 7. 写入文件（覆盖原 EXR）
-            File.WriteAllBytes(exrPath, exrBytes);
-
-            // 8. 恢复导入设置
-            if (importer != null)
-            {
-                importer.isReadable = origReadable;
-                importer.textureType = TextureImporterType.Default;
-                importer.textureShape = TextureImporterShape.TextureCube;
-                importer.generateCubemap = TextureImporterGenerateCubemap.FullCubemap;
-                importer.sRGBTexture = origSRGB;
-                importer.alphaSource = TextureImporterAlphaSource.FromInput;
-                importer.alphaIsTransparency = true;
-                importer.mipmapEnabled = origMipMaps;
-                importer.borderMipmap = false;
-                importer.npotScale = TextureImporterNPOTScale.ToNearest;
-
-                var so = new SerializedObject(importer);
-                var convProp = so.FindProperty("m_ConvolutionType");
-                if (convProp != null) convProp.intValue = origConvolution;
-                var seamProp = so.FindProperty("m_SeamlessCubemap");
-                if (seamProp != null) seamProp.boolValue = origSeamless;
-                so.ApplyModifiedProperties();
-
-                importer.SaveAndReimport();
-            }
-
-            AssetDatabase.Refresh();
-
-            // 9. 加载处理后的 Cubemap
-            return AssetDatabase.LoadAssetAtPath<Cubemap>(exrPath);
-        }
-
-        /// <summary>
-        /// 将方向向量转换为 Cubemap 面索引和 [0,1] UV 坐标
-        /// 严格使用与 CubemapSHProjector.GetCubemapDirection 相同的轴定义，保证正反互逆。
-        /// </summary>
-        static void DirectionToFaceUV(Vector3 dir, out int face, out float u, out float v)
-        {
-            dir.Normalize();
-            float ax = Mathf.Abs(dir.x);
-            float ay = Mathf.Abs(dir.y);
-            float az = Mathf.Abs(dir.z);
-
-            // 1) 确定面
-            if (ax >= ay && ax >= az)      face = dir.x > 0 ? 0 : 1;
-            else if (ay >= ax && ay >= az) face = dir.y > 0 ? 2 : 3;
-            else                            face = dir.z > 0 ? 4 : 5;
-
-            // 2) 使用与 GetCubemapDirection 相同的 FaceNormal/UAxis/VAxis 反算 (u,v) ∈ [-1,1]
-            // GetCubemapDirection 中：raw = FaceNormal + u*FaceUAxis + v*FaceVAxis
-            // 由于三个基向量两两正交，且 |FaceNormal|=1，
-            // 所以 dir 归一化前的向量 raw 满足 raw·FaceNormal = 1，
-            // 即 raw = dir / (dir·FaceNormal)，再点乘对应轴即可解出 u,v。
-            Vector3[] Normals = {
-                new Vector3( 1, 0, 0), new Vector3(-1, 0, 0),
-                new Vector3( 0, 1, 0), new Vector3( 0,-1, 0),
-                new Vector3( 0, 0, 1), new Vector3( 0, 0,-1),
-            };
-            Vector3[] UAxes = {
-                new Vector3( 0, 0,-1), new Vector3( 0, 0, 1),
-                new Vector3( 1, 0, 0), new Vector3( 1, 0, 0),
-                new Vector3( 1, 0, 0), new Vector3(-1, 0, 0),
-            };
-            Vector3[] VAxes = {
-                new Vector3(0,-1, 0), new Vector3(0,-1, 0),
-                new Vector3(0, 0, 1), new Vector3(0, 0,-1),
-                new Vector3(0,-1, 0), new Vector3(0,-1, 0),
-            };
-
-            float denom = Vector3.Dot(dir, Normals[face]);
-            if (Mathf.Abs(denom) < 1e-6f) denom = (denom < 0f) ? -1e-6f : 1e-6f;
-            Vector3 raw = dir / denom;
-
-            float su = Vector3.Dot(raw, UAxes[face]);   // [-1, 1]
-            float sv = Vector3.Dot(raw, VAxes[face]);   // [-1, 1]
-
-            u = Mathf.Clamp01((su + 1f) * 0.5f);
-            v = Mathf.Clamp01((sv + 1f) * 0.5f);
-            
-            // DirectionToFaceUV 结尾修改：
-            if (face == 2 || face == 3)
-                v = Mathf.Clamp01((sv + 1f) * 0.5f);  // ±Y 面：v 与 sv 同向
-            else
-                v = Mathf.Clamp01((1f - sv) * 0.5f);  // 其他面：v 与 sv 反向（对应 y=0 在底部）
-        }
-
-        /// <summary>
-        /// 从 Cubemap 像素数组中双线性采样
-        /// </summary>
-        static Color SampleCubemapBilinear(Color[][] facePixels, int size, Vector3 dir)
-        {
-            DirectionToFaceUV(dir, out int face, out float u, out float v);
-
-            float px = u * size - 0.5f;
-            // // ⚠️ 关键修复： ⚠️ v 需要翻转，因为：
-            // // - DirectionToFaceUV 中 v=1 对应 vAxis 正方向（多为世界 -Y，即"下方"）
-            // // - 但 GetPixels 数组 y=0 才是图像底部（世界"下方"）
-            // // - 所以要把 uv 空间的 v=1 映射到数组的 y=0
-            // float py = (1f - v) * size - 0.5f;
-            
-            float py = v * size - 0.5f;   // ← 不再统一翻转，翻转已在 DirectionToFaceUV 内处理
-
-
-            int x0 = Mathf.FloorToInt(px);
-            int y0 = Mathf.FloorToInt(py);
-            float fx = px - x0;
-            float fy = py - y0;
-
-            int x1 = x0 + 1;
-            int y1 = y0 + 1;
-
-            x0 = Mathf.Clamp(x0, 0, size - 1);
-            x1 = Mathf.Clamp(x1, 0, size - 1);
-            y0 = Mathf.Clamp(y0, 0, size - 1);
-            y1 = Mathf.Clamp(y1, 0, size - 1);
-
-            Color c00 = facePixels[face][y0 * size + x0];
-            Color c01 = facePixels[face][y1 * size + x0];
-            Color c10 = facePixels[face][y0 * size + x1];
-            Color c11 = facePixels[face][y1 * size + x1];
-
-            Color c0 = Color.Lerp(c00, c01, fy);
-            Color c1 = Color.Lerp(c10, c11, fy);
-            return Color.Lerp(c0, c1, fx);
-        }
-
-        /// <summary>
-        /// 对节点的 Cubemap 进行半球映射独立处理（烘焙后单独处理环境球）
-        /// </summary>
-        void ProcessNodeHemisphereMirror(EnvTimeNode node)
-        {
-            Cubemap cube = node.GetMainCubemap();
-            if (cube == null)
-            {
-                EditorUtility.DisplayDialog("错误", "节点未烘焙 Cubemap，请先烘焙", "确定");
-                return;
-            }
-
-            string cubePath = AssetDatabase.GetAssetPath(cube);
-            if (string.IsNullOrEmpty(cubePath))
-            {
-                EditorUtility.DisplayDialog("错误", "无法获取 Cubemap 资源路径", "确定");
-                return;
-            }
-
-            EditorUtility.DisplayProgressBar("半球映射", "正在处理 Cubemap...", 0f);
-
-            Cubemap processed = ProcessCubemapHemisphereMirror(cubePath, node.hemisphereAngle);
-
-            EditorUtility.ClearProgressBar();
-
-            if (processed != null)
-            {
-                if (node.mainProbe.mode == ReflectionProbeMode.Custom)
-                    node.mainProbe.customBakedTexture = processed;
-                else
-                    node.mainProbe.bakedTexture = processed;
-                EditorUtility.SetDirty(node.mainProbe);
-
-                EnvTimeSimpleDebug.Log($"<color=#7CFC00>[EnvTimeline]</color> 半球映射处理完成: {cubePath} (角度: {node.hemisphereAngle}°)");
-                EditorUtility.DisplayDialog("✓ 处理完成",
-                    $"半球映射处理完成\n文件: {cubePath}\n角度: {node.hemisphereAngle}°", "确定");
-            }
-            else
-            {
-                EditorUtility.DisplayDialog("错误", "半球映射处理失败，请查看 Console", "确定");
             }
         }
     }
