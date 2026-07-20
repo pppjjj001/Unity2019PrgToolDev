@@ -16,10 +16,7 @@ namespace Hotfix.Core.EnvTimelineSimple
         public float timeSpeed = 1f;
 
         [Header("写入选项")]
-        public bool writeToRenderSettings = false;
         public bool writeToMPB = true;
-        public bool writeMainCubemapToMaterial = true;
-        public string envCubemapPropName = "_SpecularEnvCubemap0";
 
         [Header("ReflectionProbe 控制")]
         public bool controlReflectionProbes = true;
@@ -30,6 +27,12 @@ namespace Hotfix.Core.EnvTimelineSimple
                  "⚠️ 弊端：会创建材质实例副本，增加少量内存，需手动清理。\n" +
                  "编辑模式始终使用 MPB，不受此选项影响。")]
         public bool useMaterialInstanceForSkinnedMesh = false;
+
+        [Header("关闭时恢复")]
+        [Tooltip("Controller 禁用/关闭时，将受影响的 Renderer 的 LightProbeUsage 恢复为此值。\n" +
+                 "Off = 关闭 Light Probe（默认）\n" +
+                 "BlendProbes = 恢复为 Unity 默认的混合探针")]
+        public LightProbeUsage restoreLightProbeUsage = LightProbeUsage.Off;
 
         private EnvironmentTimelineData _timelineData;
         public EnvironmentTimelineData timelineData
@@ -44,8 +47,7 @@ namespace Hotfix.Core.EnvTimelineSimple
 
         readonly Dictionary<Renderer, MaterialPropertyBlock> _mpbCache
             = new Dictionary<Renderer, MaterialPropertyBlock>();
-        readonly Dictionary<Renderer, LightProbeUsage> _originalLightProbeUsages
-            = new Dictionary<Renderer, LightProbeUsage>();
+        readonly HashSet<Renderer> _modifiedRenderers = new HashSet<Renderer>();
 
         // 运行模式材质实例缓存（仅 SkinnedMeshRenderer）
         // Value 为材质数组，支持多子网格/多材质
@@ -56,6 +58,9 @@ namespace Hotfix.Core.EnvTimelineSimple
 
         readonly HashSet<ReflectionProbe> _currentActiveProbes = new HashSet<ReflectionProbe>();
         readonly HashSet<ReflectionProbe> _nextActiveProbes = new HashSet<ReflectionProbe>();
+
+        // 全局状态缓存（用于 OnDisable 时还原，避免影响场景）
+        readonly Dictionary<ReflectionProbe, bool> _originalProbeStates = new Dictionary<ReflectionProbe, bool>();
 
         EnvTimeNode _lastFrom, _lastTo;
 
@@ -85,24 +90,13 @@ namespace Hotfix.Core.EnvTimelineSimple
             // ★ BlendZone：使用 to 节点的混合区域设置来计算 SH 混合权重
             BlendZone bz = to != null ? to.blendZone : null;
             float shT = bz != null ? bz.EvaluateSHBlend(t) : t;
-            float probeBlend = bz != null ? bz.EvaluateProbeBlend(t) : (t >= 1f ? 1f : 0f);
 
             SerializedSH lerpedSH = SerializedSH.Lerp(from.customSH, to.customSH, shT);
 
-            if (writeToRenderSettings && lerpedSH.IsValid)
-            {
-                RenderSettings.ambientProbe = lerpedSH.ToSHL2();
-            }
-
             if (writeToMPB)
             {
-                Cubemap fromCube = from.GetMainCubemap();
-                Cubemap toCube   = to.GetMainCubemap();
-                // ★ Cubemap 跟随 Probe 切换点选择
-                Cubemap mainCube = (probeBlend < 0.5f) ? (fromCube ?? toCube) : (toCube ?? fromCube);
-
-                ApplyMPBForNode(from, lerpedSH, mainCube);
-                if (to != from) ApplyMPBForNode(to, lerpedSH, mainCube);
+                ApplyMPBForNode(from, lerpedSH);
+                if (to != from) ApplyMPBForNode(to, lerpedSH);
             }
 
             if (controlReflectionProbes)
@@ -117,7 +111,7 @@ namespace Hotfix.Core.EnvTimelineSimple
         // ===========================================================
         // 既有逻辑
         // ===========================================================
-        void ApplyMPBForNode(EnvTimeNode node, SerializedSH lerpedSH, Cubemap mainCube)
+        void ApplyMPBForNode(EnvTimeNode node, SerializedSH lerpedSH)
         {
             foreach (var go in node.affectedTargets)
             {
@@ -130,9 +124,8 @@ namespace Hotfix.Core.EnvTimelineSimple
                 {
                     if (!r) continue;
 
-                    // 缓存原始 LightProbeUsage 并切换为 CustomProvided
-                    if (!_originalLightProbeUsages.ContainsKey(r))
-                        _originalLightProbeUsages[r] = r.lightProbeUsage;
+                    // 记录被修改的 Renderer，关闭时统一恢复
+                    _modifiedRenderers.Add(r);
                     if (r.lightProbeUsage != LightProbeUsage.CustomProvided)
                         r.lightProbeUsage = LightProbeUsage.CustomProvided;
 
@@ -140,7 +133,7 @@ namespace Hotfix.Core.EnvTimelineSimple
                     if (Application.isPlaying && useMaterialInstanceForSkinnedMesh
                         && r is SkinnedMeshRenderer)
                     {
-                        ApplyToMaterialInstance(r, lerpedSH, mainCube);
+                        ApplyToMaterialInstance(r, lerpedSH);
                     }
                     else
                     {
@@ -155,12 +148,6 @@ namespace Hotfix.Core.EnvTimelineSimple
 
                         lerpedSH.ApplyToMPB(mpb);
 
-                        if (writeMainCubemapToMaterial && mainCube != null
-                            && !string.IsNullOrEmpty(envCubemapPropName))
-                        {
-                            mpb.SetTexture(envCubemapPropName, mainCube);
-                        }
-
                         r.SetPropertyBlock(mpb);
                     }
                 }
@@ -174,7 +161,7 @@ namespace Hotfix.Core.EnvTimelineSimple
         /// ⚠️ 材质实例需在 ClearAllMPB / OnDisable 中手动销毁，否则内存泄漏。
         /// ✅ 使用材质实例（同 shader）不会破坏 SRP Batcher，而 MPB 会。
         /// </summary>
-        void ApplyToMaterialInstance(Renderer r, SerializedSH lerpedSH, Cubemap mainCube)
+        void ApplyToMaterialInstance(Renderer r, SerializedSH lerpedSH)
         {
             Material[] matInstances;
             if (!_materialInstanceCache.TryGetValue(r, out matInstances))
@@ -197,17 +184,11 @@ namespace Hotfix.Core.EnvTimelineSimple
                 r.sharedMaterials = matInstances;
             }
 
-            // 向所有材质实例写入 SH 系数和 Cubemap
+            // 向所有材质实例写入 SH 系数
             for (int i = 0; i < matInstances.Length; i++)
             {
                 if (matInstances[i] == null) continue;
                 lerpedSH.ApplyToMaterial(matInstances[i]);
-
-                if (writeMainCubemapToMaterial && mainCube != null
-                    && !string.IsNullOrEmpty(envCubemapPropName))
-                {
-                    matInstances[i].SetTexture(envCubemapPropName, mainCube);
-                }
             }
         }
 
@@ -251,12 +232,16 @@ namespace Hotfix.Core.EnvTimelineSimple
             {
                 if (p == null) continue;
                 if (!_nextActiveProbes.Contains(p))
+                {
+                    CacheProbeState(p);
                     SetProbeEnabled(p, false);
+                }
             }
 
             foreach (var p in _nextActiveProbes)
             {
                 if (p == null) continue;
+                CacheProbeState(p);
                 SetProbeEnabled(p, true);
             }
 
@@ -270,6 +255,31 @@ namespace Hotfix.Core.EnvTimelineSimple
             if (node.mainProbe) set.Add(node.mainProbe);
             foreach (var p in node.additionalProbes)
                 if (p) set.Add(p);
+        }
+
+        /// <summary>
+        /// 缓存 Probe 的原始激活状态（仅首次触碰时缓存），供 OnDisable 还原。
+        /// </summary>
+        void CacheProbeState(ReflectionProbe p)
+        {
+            if (p == null) return;
+            if (!_originalProbeStates.ContainsKey(p))
+                _originalProbeStates[p] = p.enabled && p.gameObject.activeSelf;
+        }
+
+        /// <summary>
+        /// 还原所有被 Controller 改过的 ReflectionProbe 到原始激活状态。
+        /// </summary>
+        public void RestoreProbeStates()
+        {
+            foreach (var kv in _originalProbeStates)
+            {
+                if (kv.Key == null) continue;
+                SetProbeEnabled(kv.Key, kv.Value);
+            }
+            _originalProbeStates.Clear();
+            _currentActiveProbes.Clear();
+            _nextActiveProbes.Clear();
         }
 
         static void SetProbeEnabled(ReflectionProbe p, bool enabled)
@@ -307,10 +317,10 @@ namespace Hotfix.Core.EnvTimelineSimple
             // 清理材质实例（恢复原始 sharedMaterials 并销毁实例）
             ClearMaterialInstances();
 
-            // 恢复原始 LightProbeUsage
-            foreach (var kv in _originalLightProbeUsages)
-                if (kv.Key) kv.Key.lightProbeUsage = kv.Value;
-            _originalLightProbeUsages.Clear();
+            // 恢复 LightProbeUsage 为用户指定值
+            foreach (var r in _modifiedRenderers)
+                if (r) r.lightProbeUsage = restoreLightProbeUsage;
+            _modifiedRenderers.Clear();
         }
 
         /// <summary>
@@ -341,10 +351,9 @@ namespace Hotfix.Core.EnvTimelineSimple
 
         void OnDisable()
         {
-            if (!Application.isPlaying)
-            {
-                ClearAllMPB();
-            }
+            // 编辑模式和运行模式都需要清理，避免残留副作用
+            ClearAllMPB();
+            RestoreProbeStates();
         }
     }
 }

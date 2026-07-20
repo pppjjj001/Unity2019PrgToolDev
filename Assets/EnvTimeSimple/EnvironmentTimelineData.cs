@@ -293,13 +293,17 @@ namespace Hotfix.Core.EnvTimelineSimple
                  + "❌ 取消：此节点的反射球不会启用，场景将使用系统默认的反射环境。\n"
                  + "（注意：取消后烘焙 SH 等不受影响，仅运行时反射球不激活）。")]
         public bool enableReflectionSphere = true;
+        
         public ReflectionProbe mainProbe;
+        
         public List<ReflectionProbe> additionalProbes = new List<ReflectionProbe>();
-
+        
+        
         [Header("影响目标")]
         public List<GameObject> affectedTargets = new List<GameObject>();
         public bool includeChildren = true;
-
+        
+        
         [Header("ReflectionProbe 烘焙参与模型")]
         [Tooltip("烘焙此节点时，将这些 GameObject 及其递归所有子物体临时勾选 ReflectionProbeStatic 以参与烘焙，烘焙结束后自动还原。")]
         public List<GameObject> reflectionProbeBakeTargets = new List<GameObject>();

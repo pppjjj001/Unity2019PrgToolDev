@@ -1,4 +1,4 @@
-﻿// EnvironmentTimelineEditorWindow.cs（MonoBehaviour 适配版 - 全局可滚动 + 视觉强化版）
+﻿﻿// EnvironmentTimelineEditorWindow.cs（MonoBehaviour 适配版 - 全局可滚动 + 视觉强化版）
 #if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
@@ -347,6 +347,108 @@ namespace BYTools.EnvTimeline
             return colors[0];
         }
     }
+
+    // ================================================================
+    // CubemapImportFormatUtility — Cubemap 导入格式工具
+    // 控制 HDR/LDR Cubemap 的各平台纹理格式，并验证 HDR 兼容性
+    // ================================================================
+    public static class CubemapImportFormatUtility
+    {
+        /// <summary>需要检查 HDR 格式的主要平台</summary>
+        public static readonly string[] HDR_PLATFORMS = { "Standalone", "Android", "iPhone", "WebGL" };
+
+        /// <summary>支持 HDR 的 TextureImporterFormat 集合</summary>
+        static readonly HashSet<TextureImporterFormat> HDR_FORMATS = new HashSet<TextureImporterFormat>
+        {
+            TextureImporterFormat.BC6H,
+            TextureImporterFormat.ASTC_6x6,
+            TextureImporterFormat.ASTC_HDR_4x4,
+            TextureImporterFormat.ASTC_HDR_5x5,
+            TextureImporterFormat.ASTC_HDR_6x6,
+            TextureImporterFormat.ASTC_HDR_8x8,
+            TextureImporterFormat.ASTC_HDR_10x10,
+            TextureImporterFormat.ASTC_HDR_12x12,
+            TextureImporterFormat.RGBAHalf,
+            TextureImporterFormat.RGBAFloat,
+        };
+
+        /// <summary>
+        /// 为 HDR Cubemap (EXR) 设置各平台导入格式。
+        /// • Standalone: BC6H（HDR 压缩，体积小）
+        /// • Android / iPhone: RGBAHalf（16 位浮点 HDR，兼容性好）
+        /// • WebGL: RGBAHalf
+        /// </summary>
+        public static void ApplyHDRPlatformSettings(TextureImporter importer)
+        {
+            if (importer == null) return;
+            SetPlatform(importer, "Standalone", TextureImporterFormat.BC6H, 2048);
+            SetPlatform(importer, "Android", TextureImporterFormat.ASTC_HDR_6x6, 2048);
+            SetPlatform(importer, "iPhone", TextureImporterFormat.ASTC_6x6, 2048);
+            // WebGL 无 HDR 压缩格式，不覆盖让 Unity 自动选择
+        }
+
+        /// <summary>
+        /// 为 LDR Cubemap (PNG 占位图) 设置各平台压缩格式。
+        /// • Standalone / WebGL: DXT5
+        /// • Android / iPhone: ASTC_6x6
+        /// </summary>
+        public static void ApplyLDRPlatformSettings(TextureImporter importer)
+        {
+            if (importer == null) return;
+            SetPlatform(importer, "Standalone", TextureImporterFormat.DXT5, 2048);
+            SetPlatform(importer, "Android", TextureImporterFormat.ASTC_6x6, 2048);
+            SetPlatform(importer, "iPhone", TextureImporterFormat.ASTC_6x6, 2048);
+            SetPlatform(importer, "WebGL", TextureImporterFormat.DXT5, 2048);
+        }
+
+        static void SetPlatform(TextureImporter importer, string platform,
+            TextureImporterFormat format, int maxSize)
+        {
+            var ps = new TextureImporterPlatformSettings
+            {
+                name = platform,
+                overridden = true,
+                format = format,
+                maxTextureSize = maxSize,
+                textureCompression = TextureImporterCompression.Compressed,
+                crunchedCompression = false,
+                allowsAlphaSplitting = false,
+            };
+            importer.SetPlatformTextureSettings(ps);
+        }
+
+        /// <summary>
+        /// 验证 Cubemap 各平台导入格式是否支持 HDR。
+        /// 返回不符合要求的平台描述列表，空列表表示全部通过。
+        /// </summary>
+        public static List<string> ValidateHDRFormats(string assetPath)
+        {
+            var issues = new List<string>();
+            var importer = AssetImporter.GetAtPath(assetPath) as TextureImporter;
+            if (importer == null)
+            {
+                issues.Add("无法获取 TextureImporter");
+                return issues;
+            }
+
+            foreach (var platform in HDR_PLATFORMS)
+            {
+                var ps = importer.GetPlatformTextureSettings(platform);
+                if (ps != null && ps.overridden)
+                {
+                    if (!HDR_FORMATS.Contains(ps.format))
+                        issues.Add($"{platform}: {ps.format} 不支持 HDR，请改为 BC6H 或 RGBAHalf");
+                }
+            }
+
+            // 检查默认平台
+            var def = importer.GetDefaultPlatformTextureSettings();
+            if (def != null && !HDR_FORMATS.Contains(def.format))
+                issues.Add($"Default: {def.format} 不支持 HDR，请改为 BC6H 或 RGBAHalf");
+
+            return issues;
+        }
+    }
     public class EnvironmentTimelineEditorWindow : EditorWindow
     {
         /// <summary>
@@ -514,6 +616,8 @@ namespace BYTools.EnvTimeline
 
             EditorGUILayout.Space(4);
             DrawCubemapSettings();
+            EditorGUILayout.Space(4);
+            DrawControllerSettings();
             EditorGUILayout.Space(4);
             DrawTimeline();
             EditorGUILayout.Space(4);
@@ -1942,6 +2046,77 @@ namespace BYTools.EnvTimeline
         }
 
         // ============================================================
+        // Controller 设置
+        // ============================================================
+        void DrawControllerSettings()
+        {
+            var ctrl = data != null ? data.GetComponent<EnvironmentTimelineProController>() : null;
+            if (ctrl == null) return;
+
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            DrawSectionHeader("Controller 设置", CLR_INFO, "⚙");
+
+            EditorGUI.BeginChangeCheck();
+
+            ctrl.writeToMPB = EditorGUILayout.Toggle(
+                new GUIContent("写入 MPB", "将 SH 系数和 Cubemap 写入 MaterialPropertyBlock"),
+                ctrl.writeToMPB);
+            ctrl.writeMainCubemapToMaterial = EditorGUILayout.Toggle(
+                new GUIContent("写入 Cubemap 到材质", "将主 Cubemap 写入材质属性"),
+                ctrl.writeMainCubemapToMaterial);
+            if (ctrl.writeMainCubemapToMaterial)
+            {
+                ctrl.envCubemapPropName = EditorGUILayout.TextField(
+                    new GUIContent("Cubemap 属性名", "材质中环境 Cubemap 的属性名"),
+                    ctrl.envCubemapPropName);
+            }
+
+            ctrl.controlReflectionProbes = EditorGUILayout.Toggle(
+                new GUIContent("控制 ReflectionProbe", "自动激活/关闭节点关联的 ReflectionProbe"),
+                ctrl.controlReflectionProbes);
+
+            EditorGUILayout.Space(4);
+            ctrl.useMaterialInstanceForSkinnedMesh = EditorGUILayout.Toggle(
+                new GUIContent("SkinnedMesh 用材质实例", "运行模式下对 SkinnedMeshRenderer 使用材质实例直接修改（不破坏 SRP Batcher）"),
+                ctrl.useMaterialInstanceForSkinnedMesh);
+
+            EditorGUILayout.Space(4);
+            ctrl.restoreLightProbeUsage = (LightProbeUsage)EditorGUILayout.EnumPopup(
+                new GUIContent("关闭时恢复 LightProbe", "Controller 禁用时，将 Renderer 的 LightProbeUsage 恢复为此值\nOff = 关闭（默认）\nBlendProbes = Unity 默认混合探针"),
+                ctrl.restoreLightProbeUsage);
+
+            EditorGUILayout.Space(4);
+            ctrl.customLightProbeNeighborCount = EditorGUILayout.IntSlider(
+                new GUIContent("Probe 邻居数", "自定义 Light Probe 采样邻居数。4=四近邻加权"),
+                ctrl.customLightProbeNeighborCount, 1, 4);
+            ctrl.probeInterpolationMode = (ProbeInterpolationMode)EditorGUILayout.EnumPopup(
+                new GUIContent("插值模式", "InverseDistance=逆距离加权（快），Tetrahedral=四面体重心坐标（平滑）"),
+                ctrl.probeInterpolationMode);
+            ctrl.cacheCustomProbeWeights = EditorGUILayout.Toggle(
+                new GUIContent("缓存 Probe 权重", "缓存每个 Renderer 的邻近 Probe 权重，静态物体建议开启"),
+                ctrl.cacheCustomProbeWeights);
+            ctrl.prefabRoot = (Transform)EditorGUILayout.ObjectField(
+                new GUIContent("Prefab 根节点", "指定后，LightProbe 快照中的局部位置会跟随 Prefab 变换自动变换"),
+                ctrl.prefabRoot, typeof(Transform), true);
+
+            if (EditorGUI.EndChangeCheck())
+            {
+                EditorUtility.SetDirty(ctrl);
+            }
+
+            EditorGUILayout.Space(4);
+            if (GUILayout.Button("清除所有 MPB（恢复 Renderer）", GUILayout.Height(22)))
+            {
+                Undo.RecordObject(ctrl, "Clear All MPB");
+                ctrl.ClearAllMPB();
+                ctrl.RestoreProbeStates();
+                SceneView.RepaintAll();
+            }
+
+            EditorGUILayout.EndVertical();
+        }
+
+        // ============================================================
         // 🎨 底部固定操作栏（已移除"烘焙所有 Probe"按钮）
         // ============================================================
         void DrawBottomActions()
@@ -2234,6 +2409,9 @@ void BakeLightProbesOnlyWithConfirm()
                 if (fixupProp != null) fixupProp.boolValue = true;
                 so.ApplyModifiedProperties();
 
+                // ★ 各平台 LDR 压缩格式
+                CubemapImportFormatUtility.ApplyLDRPlatformSettings(importer);
+
                 importer.SaveAndReimport();
             }
 
@@ -2458,6 +2636,16 @@ void BakeLightProbesOnlyWithConfirm()
             if (bakeSuccess)
             {
                 AssetDatabase.Refresh();
+
+                // ★ 设置 HDR 各平台格式
+                var bakedImporter = AssetImporter.GetAtPath(filename) as TextureImporter;
+                if (bakedImporter != null)
+                {
+                    CubemapImportFormatUtility.ApplyHDRPlatformSettings(bakedImporter);
+                    bakedImporter.SaveAndReimport();
+                    AssetDatabase.Refresh();
+                }
+
                 var bakedTex = AssetDatabase.LoadAssetAtPath<Cubemap>(filename);
                 if (bakedTex != null)
                 {
@@ -2465,6 +2653,13 @@ void BakeLightProbesOnlyWithConfirm()
                     probe.mode = ReflectionProbeMode.Custom;
                     probe.customBakedTexture = bakedTex;
                     EditorUtility.SetDirty(probe);
+                }
+
+                // ★ 验证 HDR 格式
+                var hdrIssues = CubemapImportFormatUtility.ValidateHDRFormats(filename);
+                if (hdrIssues.Count > 0)
+                {
+                    EnvTimeDebug.LogWarning($"[EnvTimeline] Cubemap HDR 格式检查未通过: {filename}\n" + string.Join("\n", hdrIssues));
                 }
 
                 // 半球映射后处理
@@ -2616,6 +2811,16 @@ void BakeLightProbesOnlyWithConfirm()
                     probe.mode = ReflectionProbeMode.Custom;
 
                     AssetDatabase.Refresh();
+
+                    // ★ 设置 HDR 各平台格式
+                    var batchImporter = AssetImporter.GetAtPath(filename) as TextureImporter;
+                    if (batchImporter != null)
+                    {
+                        CubemapImportFormatUtility.ApplyHDRPlatformSettings(batchImporter);
+                        batchImporter.SaveAndReimport();
+                        AssetDatabase.Refresh();
+                    }
+
                     var bakedTex = AssetDatabase.LoadAssetAtPath<Cubemap>(filename);
                     if (bakedTex != null)
                     {
@@ -2843,10 +3048,20 @@ void BakeLightProbesOnlyWithConfirm()
                 if (seamProp != null) seamProp.boolValue = origSeamless;
                 so.ApplyModifiedProperties();
 
+                // ★ 各平台 HDR 格式
+                CubemapImportFormatUtility.ApplyHDRPlatformSettings(importer);
+
                 importer.SaveAndReimport();
             }
 
             AssetDatabase.Refresh();
+
+            // ★ 验证 HDR 格式
+            var hdrIssues = CubemapImportFormatUtility.ValidateHDRFormats(exrPath);
+            if (hdrIssues.Count > 0)
+            {
+                EnvTimeDebug.LogWarning($"[EnvTimeline] Cubemap HDR 格式检查未通过: {exrPath}\n" + string.Join("\n", hdrIssues));
+            }
 
             // 9. 加载处理后的 Cubemap
             return AssetDatabase.LoadAssetAtPath<Cubemap>(exrPath);

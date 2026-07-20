@@ -16,7 +16,6 @@ namespace BYTools.EnvTimeline
         public float timeSpeed = 1f;
 
         [Header("写入选项")]
-        public bool writeToRenderSettings = false;
         public bool writeToMPB = true;
         public bool writeMainCubemapToMaterial = true;
         public string envCubemapPropName = "_SpecularEnvCubemap0";
@@ -31,10 +30,14 @@ namespace BYTools.EnvTimeline
                  "编辑模式始终使用 MPB，不受此选项影响。")]
         public bool useMaterialInstanceForSkinnedMesh = false;
 
-        // 🆕 Light Probe 控制
-        [Header("Light Probe 控制")]
-        [Tooltip("启用 Light Probe 数据混合（运行时写入 LightmapSettings.lightProbes）")]
-        public bool blendLightProbes = true;
+        [Header("关闭时恢复")]
+        [Tooltip("Controller 禁用/关闭时，将受影响的 Renderer 的 LightProbeUsage 恢复为此值。\n" +
+                 "Off = 关闭 Light Probe（默认）\n" +
+                 "BlendProbes = 恢复为 Unity 默认的混合探针")]
+        public LightProbeUsage restoreLightProbeUsage = LightProbeUsage.Off;
+
+        // 🆕 Light Probe 控制（逐 Renderer 采样，不走全局 LightmapSettings.lightProbes）
+        [Header("Light Probe 采样")]
         [Tooltip("自定义 Light Probe 采样邻居数。4=四近邻加权")]
         [Range(1, 4)]
         public int customLightProbeNeighborCount = 4;
@@ -42,8 +45,6 @@ namespace BYTools.EnvTimeline
         public ProbeInterpolationMode probeInterpolationMode = ProbeInterpolationMode.InverseDistance;
         [Tooltip("缓存每个 Renderer 的邻近 Probe index/weight。静态物体建议开启，可把采样成本从 Renderer×Probe 降到 Renderer×4")]
         public bool cacheCustomProbeWeights = true;
-        [Tooltip("更新频率限制（秒）。0=每帧。建议 0.05~0.1 节省性能")]
-        public float lightProbeUpdateInterval = 0f;
 
         [Header("Prefab 变换支持")]
         [Tooltip("Prefab 根节点。指定后，LightProbe 快照中的局部位置会跟随 Prefab 的旋转/缩放/位移自动变换，SH 系数也会相应旋转。")]
@@ -67,17 +68,13 @@ namespace BYTools.EnvTimeline
         readonly HashSet<ReflectionProbe> _currentActiveProbes = new HashSet<ReflectionProbe>();
         readonly HashSet<ReflectionProbe> _nextActiveProbes = new HashSet<ReflectionProbe>();
 
+        // 全局状态缓存（用于 OnDisable 时还原，避免影响场景）
+        readonly Dictionary<ReflectionProbe, bool> _originalProbeStates = new Dictionary<ReflectionProbe, bool>();
+
         EnvTimeNode _lastFrom, _lastTo;
 
-        // 🆕 Light Probe 混合 - 预分配的 “栈式” 缓冲区（避免每帧 GC）
-        SphericalHarmonicsL2[] _shBlendBuffer;       // 输出给 lightProbes.bakedProbes
-        int _shBufferCapacity = 0;
-        float _lastLightProbeUpdateTime = -999f;
-        bool _lightProbeOriginalCached = false;
-        SphericalHarmonicsL2[] _originalBakedProbes;  // 还原用
         readonly HashSet<Renderer> _customProbeRenderers = new HashSet<Renderer>();
-        readonly Dictionary<Renderer, LightProbeUsage> _originalLightProbeUsages
-            = new Dictionary<Renderer, LightProbeUsage>();
+        readonly HashSet<Renderer> _modifiedRenderers = new HashSet<Renderer>();
 
         // 运行模式材质实例缓存（仅 SkinnedMeshRenderer）
         // Value 为材质数组，支持多子网格/多材质
@@ -155,11 +152,6 @@ namespace BYTools.EnvTimeline
 
             SerializedSH lerpedSH = SerializedSH.Lerp(from.customSH, to.customSH, shT);
 
-            if (writeToRenderSettings && lerpedSH.IsValid)
-            {
-                RenderSettings.ambientProbe = lerpedSH.ToSHL2();
-            }
-
             if (writeToMPB)
             {
                 Cubemap fromCube = from.GetMainCubemap();
@@ -175,155 +167,8 @@ namespace BYTools.EnvTimeline
                 UpdateProbeActivation(from, to, t, bz);
             }
 
-            // 🆕 Light Probe 全局混合（写入 LightmapSettings.lightProbes）
-            if (blendLightProbes)
-            {
-                if (lightProbeUpdateInterval <= 0f ||
-                    Time.realtimeSinceStartup - _lastLightProbeUpdateTime >= lightProbeUpdateInterval)
-                {
-                    ApplyLightProbeBlend(from, to, shT);
-                    _lastLightProbeUpdateTime = Time.realtimeSinceStartup;
-                }
-            }
-
             _lastFrom = from;
             _lastTo = to;
-        }
-
-        // ===========================================================
-        // 🆕 Light Probe 混合 - 无 GC 实现
-        // ===========================================================
-        void ApplyLightProbeBlend(EnvTimeNode from, EnvTimeNode to, float t)
-        {
-            var lp = LightmapSettings.lightProbes;
-            if (lp == null || lp.count == 0) return;
-
-            // 缓存原始数据（用于禁用时恢复）
-            if (!_lightProbeOriginalCached)
-            {
-                _originalBakedProbes = (SphericalHarmonicsL2[])lp.bakedProbes.Clone();
-                _lightProbeOriginalCached = true;
-            }
-
-            var fromData = from.lightProbeData;
-            var toData = to.lightProbeData;
-
-            bool fromValid = fromData != null && fromData.IsValid;
-            bool toValid = toData != null && toData.IsValid;
-
-            // 都无效，直接跳过
-            if (!fromValid && !toValid) return;
-
-            int probeCount = lp.count;
-
-            // 仅当任一节点的 probe 数量与场景匹配时才执行
-            if (fromValid && fromData.ProbeCount != probeCount) fromValid = false;
-            if (toValid && toData.ProbeCount != probeCount) toValid = false;
-            if (!fromValid && !toValid) return;
-
-            EnsureBufferCapacity(probeCount);
-
-            // ★ 关键：直接覆盖 _shBlendBuffer，不分配新数组
-            if (fromValid && toValid)
-            {
-                if (from == to || t <= 0f)
-                    FillBufferFromSnapshot(fromData, probeCount);
-                else if (t >= 1f)
-                    FillBufferFromSnapshot(toData, probeCount);
-                else
-                    LerpBufferFromSnapshots(fromData, toData, t, probeCount);
-            }
-            else if (fromValid)
-            {
-                FillBufferFromSnapshot(fromData, probeCount);
-            }
-            else
-            {
-                FillBufferFromSnapshot(toData, probeCount);
-            }
-
-            // 提交（Unity 需要赋值数组才会更新）
-            lp.bakedProbes = _shBlendBuffer;
-        }
-
-        void EnsureBufferCapacity(int count)
-        {
-            if (_shBlendBuffer == null || _shBufferCapacity < count)
-            {
-                _shBlendBuffer = new SphericalHarmonicsL2[count];
-                _shBufferCapacity = count;
-            }
-        }
-
-        /// <summary>
-        /// 将快照中的 SH 系数填充到 _shBlendBuffer（无分配）
-        /// </summary>
-        void FillBufferFromSnapshot(LightProbeSnapshot snap, int count)
-        {
-            var coeffs = snap.shCoefficients;
-            for (int i = 0; i < count; i++)
-            {
-                int baseIdx = i * 27;
-                SphericalHarmonicsL2 sh = default;
-                for (int c = 0; c < 3; c++)
-                {
-                    int rowBase = baseIdx + c * 9;
-                    sh[c, 0] = coeffs[rowBase + 0];
-                    sh[c, 1] = coeffs[rowBase + 1];
-                    sh[c, 2] = coeffs[rowBase + 2];
-                    sh[c, 3] = coeffs[rowBase + 3];
-                    sh[c, 4] = coeffs[rowBase + 4];
-                    sh[c, 5] = coeffs[rowBase + 5];
-                    sh[c, 6] = coeffs[rowBase + 6];
-                    sh[c, 7] = coeffs[rowBase + 7];
-                    sh[c, 8] = coeffs[rowBase + 8];
-                }
-                _shBlendBuffer[i] = sh;
-            }
-        }
-
-        /// <summary>
-        /// 两个快照线性插值，结果写入 _shBlendBuffer（无分配，纯栈式计算）
-        /// </summary>
-        void LerpBufferFromSnapshots(LightProbeSnapshot a, LightProbeSnapshot b, float t, int count)
-        {
-            var ca = a.shCoefficients;
-            var cb = b.shCoefficients;
-            float invT = 1f - t;
-
-            for (int i = 0; i < count; i++)
-            {
-                int baseIdx = i * 27;
-                SphericalHarmonicsL2 sh = default;
-                for (int c = 0; c < 3; c++)
-                {
-                    int rowBase = baseIdx + c * 9;
-                    // 9 个系数手动展开（避免内部循环开销）
-                    sh[c, 0] = ca[rowBase + 0] * invT + cb[rowBase + 0] * t;
-                    sh[c, 1] = ca[rowBase + 1] * invT + cb[rowBase + 1] * t;
-                    sh[c, 2] = ca[rowBase + 2] * invT + cb[rowBase + 2] * t;
-                    sh[c, 3] = ca[rowBase + 3] * invT + cb[rowBase + 3] * t;
-                    sh[c, 4] = ca[rowBase + 4] * invT + cb[rowBase + 4] * t;
-                    sh[c, 5] = ca[rowBase + 5] * invT + cb[rowBase + 5] * t;
-                    sh[c, 6] = ca[rowBase + 6] * invT + cb[rowBase + 6] * t;
-                    sh[c, 7] = ca[rowBase + 7] * invT + cb[rowBase + 7] * t;
-                    sh[c, 8] = ca[rowBase + 8] * invT + cb[rowBase + 8] * t;
-                }
-                _shBlendBuffer[i] = sh;
-            }
-        }
-
-        /// <summary>
-        /// 恢复原始 Light Probe 数据
-        /// </summary>
-        public void RestoreOriginalLightProbes()
-        {
-            if (!_lightProbeOriginalCached || _originalBakedProbes == null) return;
-            var lp = LightmapSettings.lightProbes;
-            if (lp != null && lp.count == _originalBakedProbes.Length)
-            {
-                lp.bakedProbes = _originalBakedProbes;
-            }
         }
 
         /// <summary>
@@ -658,9 +503,8 @@ namespace BYTools.EnvTimeline
             {
                 if (!r) continue;
 
-                // 缓存原始 LightProbeUsage 并切换为 CustomProvided
-                if (!_originalLightProbeUsages.ContainsKey(r))
-                    _originalLightProbeUsages[r] = r.lightProbeUsage;
+                // 记录被修改的 Renderer，关闭时统一恢复
+                _modifiedRenderers.Add(r);
                 if (r.lightProbeUsage != LightProbeUsage.CustomProvided)
                     r.lightProbeUsage = LightProbeUsage.CustomProvided;
 
@@ -792,12 +636,16 @@ void UpdateProbeActivation(EnvTimeNode from, EnvTimeNode to, float t, BlendZone 
             {
                 if (p == null) continue;
                 if (!_nextActiveProbes.Contains(p))
+                {
+                    CacheProbeState(p);
                     SetProbeEnabled(p, false);
+                }
             }
 
             foreach (var p in _nextActiveProbes)
             {
                 if (p == null) continue;
+                CacheProbeState(p);
                 SetProbeEnabled(p, true);
             }
 
@@ -826,6 +674,31 @@ void UpdateProbeActivation(EnvTimeNode from, EnvTimeNode to, float t, BlendZone 
                 foreach (var r in renderers)
                     if (r) set.Add(r);
             }
+        }
+
+        /// <summary>
+        /// 缓存 Probe 的原始激活状态（仅首次触碰时缓存），供 OnDisable 还原。
+        /// </summary>
+        void CacheProbeState(ReflectionProbe p)
+        {
+            if (p == null) return;
+            if (!_originalProbeStates.ContainsKey(p))
+                _originalProbeStates[p] = p.enabled && p.gameObject.activeSelf;
+        }
+
+        /// <summary>
+        /// 还原所有被 Controller 改过的 ReflectionProbe 到原始激活状态。
+        /// </summary>
+        public void RestoreProbeStates()
+        {
+            foreach (var kv in _originalProbeStates)
+            {
+                if (kv.Key == null) continue;
+                SetProbeEnabled(kv.Key, kv.Value);
+            }
+            _originalProbeStates.Clear();
+            _currentActiveProbes.Clear();
+            _nextActiveProbes.Clear();
         }
 
         static void SetProbeEnabled(ReflectionProbe p, bool enabled)
@@ -920,20 +793,19 @@ void UpdateProbeActivation(EnvTimeNode from, EnvTimeNode to, float t, BlendZone 
             // 清理材质实例（恢复原始 sharedMaterials 并销毁实例）
             ClearMaterialInstances();
 
-            foreach (var kv in _originalLightProbeUsages)
-                if (kv.Key) kv.Key.lightProbeUsage = kv.Value;
-            _originalLightProbeUsages.Clear();
+            // 恢复 LightProbeUsage 为用户指定值
+            foreach (var r in _modifiedRenderers)
+                if (r) r.lightProbeUsage = restoreLightProbeUsage;
+            _modifiedRenderers.Clear();
             _customProbeWeightCache.Clear();
             _tetraInterpolatorCache.Clear();
         }
 
         void OnDisable()
         {
-            if (!Application.isPlaying)
-            {
-                ClearAllMPB();
-                RestoreOriginalLightProbes();
-            }
+            // 编辑模式和运行模式都需要清理，避免残留副作用
+            ClearAllMPB();
+            RestoreProbeStates();
         }
     }
 }

@@ -203,7 +203,7 @@ namespace UnityEditor.EnvTimelineSimple
             return b;
         }
 
-        static bool NeedGammaToLinearConversion(Cubemap cube)
+        public static bool NeedGammaToLinearConversion(Cubemap cube)
         {
             if (QualitySettings.activeColorSpace == ColorSpace.Gamma)
             {
@@ -222,10 +222,24 @@ namespace UnityEditor.EnvTimelineSimple
             return false;
         }
 
-        static float GammaToLinear(float v)
+        public static float GammaToLinear(float v)
         {
             if (v <= 0.04045f) return v / 12.92f;
             return Mathf.Pow((v + 0.055f) / 1.055f, 2.4f);
+        }
+
+        /// <summary>
+        /// 将像素数组从 Gamma 空间批量转换到 Linear 空间
+        /// </summary>
+        public static void ConvertPixelsGammaToLinear(Color[] pixels)
+        {
+            if (pixels == null) return;
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                pixels[i].r = GammaToLinear(pixels[i].r);
+                pixels[i].g = GammaToLinear(pixels[i].g);
+                pixels[i].b = GammaToLinear(pixels[i].b);
+            }
         }
 
         static Cubemap MakeReadableCopy(Cubemap source, int maxRes)
@@ -376,6 +390,108 @@ namespace UnityEditor.EnvTimelineSimple
             Color[] colors = new Color[1];
             sh.Evaluate(dirs, colors);
             return colors[0];
+        }
+    }
+
+    // ================================================================
+    // CubemapImportFormatUtility — Cubemap 导入格式工具
+    // 控制 HDR/LDR Cubemap 的各平台纹理格式，并验证 HDR 兼容性
+    // ================================================================
+    public static class CubemapImportFormatUtility
+    {
+        /// <summary>需要检查 HDR 格式的主要平台</summary>
+        public static readonly string[] HDR_PLATFORMS = { "Standalone", "Android", "iPhone", "WebGL" };
+
+        /// <summary>支持 HDR 的 TextureImporterFormat 集合</summary>
+        static readonly HashSet<TextureImporterFormat> HDR_FORMATS = new HashSet<TextureImporterFormat>
+        {
+            TextureImporterFormat.BC6H,
+            TextureImporterFormat.ASTC_6x6,
+            TextureImporterFormat.ASTC_HDR_4x4,
+            TextureImporterFormat.ASTC_HDR_5x5,
+            TextureImporterFormat.ASTC_HDR_6x6,
+            TextureImporterFormat.ASTC_HDR_8x8,
+            TextureImporterFormat.ASTC_HDR_10x10,
+            TextureImporterFormat.ASTC_HDR_12x12,
+            TextureImporterFormat.RGBAHalf,
+            TextureImporterFormat.RGBAFloat,
+        };
+
+        /// <summary>
+        /// 为 HDR Cubemap (EXR) 设置各平台导入格式。
+        /// • Standalone: BC6H（HDR 压缩，体积小）
+        /// • Android / iPhone: RGBAHalf（16 位浮点 HDR，兼容性好）
+        /// • WebGL: RGBAHalf
+        /// </summary>
+        public static void ApplyHDRPlatformSettings(TextureImporter importer)
+        {
+            if (importer == null) return;
+            SetPlatform(importer, "Standalone", TextureImporterFormat.BC6H, 2048);
+            SetPlatform(importer, "Android", TextureImporterFormat.ASTC_HDR_6x6, 2048);
+            SetPlatform(importer, "iPhone", TextureImporterFormat.ASTC_6x6, 2048);
+            // WebGL 无 HDR 压缩格式，不覆盖让 Unity 自动选择
+        }
+
+        /// <summary>
+        /// 为 LDR Cubemap (PNG 占位图) 设置各平台压缩格式。
+        /// • Standalone / WebGL: DXT5
+        /// • Android / iPhone: ASTC_6x6
+        /// </summary>
+        public static void ApplyLDRPlatformSettings(TextureImporter importer)
+        {
+            if (importer == null) return;
+            SetPlatform(importer, "Standalone", TextureImporterFormat.DXT5, 2048);
+            SetPlatform(importer, "Android", TextureImporterFormat.ASTC_6x6, 2048);
+            SetPlatform(importer, "iPhone", TextureImporterFormat.ASTC_6x6, 2048);
+            SetPlatform(importer, "WebGL", TextureImporterFormat.DXT5, 2048);
+        }
+
+        static void SetPlatform(TextureImporter importer, string platform,
+            TextureImporterFormat format, int maxSize)
+        {
+            var ps = new TextureImporterPlatformSettings
+            {
+                name = platform,
+                overridden = true,
+                format = format,
+                maxTextureSize = maxSize,
+                textureCompression = TextureImporterCompression.Compressed,
+                crunchedCompression = false,
+                allowsAlphaSplitting = false,
+            };
+            importer.SetPlatformTextureSettings(ps);
+        }
+
+        /// <summary>
+        /// 验证 Cubemap 各平台导入格式是否支持 HDR。
+        /// 返回不符合要求的平台描述列表，空列表表示全部通过。
+        /// </summary>
+        public static List<string> ValidateHDRFormats(string assetPath)
+        {
+            var issues = new List<string>();
+            var importer = AssetImporter.GetAtPath(assetPath) as TextureImporter;
+            if (importer == null)
+            {
+                issues.Add("无法获取 TextureImporter");
+                return issues;
+            }
+
+            foreach (var platform in HDR_PLATFORMS)
+            {
+                var ps = importer.GetPlatformTextureSettings(platform);
+                if (ps != null && ps.overridden)
+                {
+                    if (!HDR_FORMATS.Contains(ps.format))
+                        issues.Add($"{platform}: {ps.format} 不支持 HDR，请改为 BC6H 或 RGBAHalf");
+                }
+            }
+
+            // 检查默认平台
+            var def = importer.GetDefaultPlatformTextureSettings();
+            if (def != null && !HDR_FORMATS.Contains(def.format))
+                issues.Add($"Default: {def.format} 不支持 HDR，请改为 BC6H 或 RGBAHalf");
+
+            return issues;
         }
     }
 
@@ -882,6 +998,9 @@ namespace UnityEditor.EnvTimelineSimple
                 if (fixupProp != null) fixupProp.boolValue = true;
                 so.ApplyModifiedProperties();
 
+                // ★ 各平台 LDR 压缩格式
+                CubemapImportFormatUtility.ApplyLDRPlatformSettings(importer);
+
                 importer.SaveAndReimport();
             }
 
@@ -1122,12 +1241,29 @@ namespace UnityEditor.EnvTimelineSimple
             if (bakeSuccess)
             {
                 AssetDatabase.Refresh();
+
+                // ★ 设置 HDR 各平台格式
+                var bakedImporter = AssetImporter.GetAtPath(filename) as TextureImporter;
+                if (bakedImporter != null)
+                {
+                    CubemapImportFormatUtility.ApplyHDRPlatformSettings(bakedImporter);
+                    bakedImporter.SaveAndReimport();
+                    AssetDatabase.Refresh();
+                }
+
                 var bakedTex = AssetDatabase.LoadAssetAtPath<Cubemap>(filename);
                 if (bakedTex != null)
                 {
                     probe.mode = ReflectionProbeMode.Custom;
                     probe.customBakedTexture = bakedTex;
                     EditorUtility.SetDirty(probe);
+                }
+
+                // ★ 验证 HDR 格式
+                var hdrIssues = CubemapImportFormatUtility.ValidateHDRFormats(filename);
+                if (hdrIssues.Count > 0)
+                {
+                    EnvTimeSimpleDebug.LogWarning($"[EnvTimeline] Cubemap HDR 格式检查未通过: {filename}\n" + string.Join("\n", hdrIssues));
                 }
 
                 if (node.enableHemisphereMirror)
@@ -1259,10 +1395,27 @@ namespace UnityEditor.EnvTimelineSimple
                 return null;
             }
 
+            // ★ 自动检测 Gamma→Linear 转换需求（与 Unity ReflectionProbe Bake 行为一致）
+            // 在 Gamma 颜色空间下，如果 Cubemap 标记为 sRGB，则像素值在 gamma 空间
+            // 需要转换到线性空间后再写入 EXR（EXR 应始终为线性空间）
+            bool needGammaToLinear = CubemapSHProjector.NeedGammaToLinearConversion(sourceCube);
+            if (needGammaToLinear)
+            {
+                EnvTimeSimpleDebug.Log($"<color=#FFD700>[EnvTimeline]</color> 检测到 Gamma 空间 sRGB Cubemap，自动转换为 Linear 空间（与 Unity Bake 行为一致）");
+            }
+
             int size = sourceCube.width;
             Color[][] facePixels = new Color[6][];
             for (int face = 0; face < 6; face++)
                 facePixels[face] = sourceCube.GetPixels((CubemapFace)face);
+
+            // ★ Gamma→Linear 转换：将像素转换到线性空间后再处理
+            // 确保半球镜像的双线性采样在线性空间进行（与 Unity Bake 行为一致）
+            if (needGammaToLinear)
+            {
+                for (int face = 0; face < 6; face++)
+                    CubemapSHProjector.ConvertPixelsGammaToLinear(facePixels[face]);
+            }
 
             sourceCube = null;
 
@@ -1298,7 +1451,7 @@ namespace UnityEditor.EnvTimelineSimple
                 }
             }
 
-            Texture2D stripTex = new Texture2D(size * 6, size, TextureFormat.RGBA32, false);
+            Texture2D stripTex = new Texture2D(size * 6, size, TextureFormat.RGBAFloat, false);
             for (int face = 0; face < 6; face++)
             {
                 Color[] flipped = new Color[size * size];
@@ -1315,7 +1468,7 @@ namespace UnityEditor.EnvTimelineSimple
             byte[] exrBytes;
             try
             {
-                exrBytes = stripTex.EncodeToEXR();
+                exrBytes = stripTex.EncodeToEXR(Texture2D.EXRFlags.CompressZIP);
             }
             catch (System.Exception e)
             {
@@ -1339,7 +1492,8 @@ namespace UnityEditor.EnvTimelineSimple
                 importer.textureType = TextureImporterType.Default;
                 importer.textureShape = TextureImporterShape.TextureCube;
                 importer.generateCubemap = TextureImporterGenerateCubemap.FullCubemap;
-                importer.sRGBTexture = origSRGB;
+                // ★ 如果做了 Gamma→Linear 转换，EXR 应标记为 Linear（sRGB=false） 
+                importer.sRGBTexture = true; //needGammaToLinear ? false : origSRGB;
                 importer.alphaSource = TextureImporterAlphaSource.FromInput;
                 importer.alphaIsTransparency = true;
                 importer.mipmapEnabled = origMipMaps;
@@ -1353,10 +1507,21 @@ namespace UnityEditor.EnvTimelineSimple
                 if (seamProp != null) seamProp.boolValue = origSeamless;
                 so.ApplyModifiedProperties();
 
+                // ★ 各平台 HDR 格式
+                CubemapImportFormatUtility.ApplyHDRPlatformSettings(importer);
+
                 importer.SaveAndReimport();
             }
 
             AssetDatabase.Refresh();
+
+            // ★ 验证 HDR 格式
+            var hdrIssues = CubemapImportFormatUtility.ValidateHDRFormats(exrPath);
+            if (hdrIssues.Count > 0)
+            {
+                string msg = $"Cubemap HDR 格式检查未通过: {exrPath}\n" + string.Join("\n", hdrIssues);
+                EnvTimeSimpleDebug.LogWarning(msg);
+            }
 
             return AssetDatabase.LoadAssetAtPath<Cubemap>(exrPath);
         }

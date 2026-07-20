@@ -1,4 +1,4 @@
-﻿// EnvironmentTimelineControllerEditor.cs
+﻿﻿// EnvironmentTimelineControllerEditor.cs
 // 重写版：分组折叠 Inspector + 自定义 LightProbe 采样调试面板 + OnSceneGUI 联动
 #if UNITY_EDITOR
 using UnityEditor;
@@ -14,7 +14,6 @@ namespace BYTools.EnvTimeline
         bool foldTime = true;
         bool foldWrite = true;
         bool foldReflProbe = true;
-        bool foldLightProbe = true;
         bool foldCustomSampling = false;   // 默认收起
         bool foldDebug = false;
         bool foldTimelineJump = false;
@@ -51,9 +50,8 @@ namespace BYTools.EnvTimeline
 
             DrawTimeSection(ctrl);
             DrawWriteSection(ctrl);
-            DrawReflectionProbeSection(ctrl);
-            DrawLightProbeSection(ctrl);
-            DrawCustomSamplingSection(ctrl);
+        DrawReflectionProbeSection(ctrl);
+        DrawCustomSamplingSection(ctrl);
             DrawDebugSection(ctrl);
             DrawTimelineJumpSection(ctrl);
         }
@@ -90,11 +88,17 @@ namespace BYTools.EnvTimeline
             foldWrite = DrawFoldHeader(foldWrite, "✍ 写入选项", CLR_HEADER_LIGHT);
             if (!foldWrite) return;
 
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("writeToRenderSettings"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("writeToMPB"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("writeMainCubemapToMaterial"));
             if (ctrl.writeMainCubemapToMaterial)
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("envCubemapPropName"));
+
+            EditorGUILayout.Space(4);
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("useMaterialInstanceForSkinnedMesh"));
+
+            EditorGUILayout.Space(4);
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("restoreLightProbeUsage"));
+
             serializedObject.ApplyModifiedProperties();
         }
 
@@ -111,29 +115,7 @@ namespace BYTools.EnvTimeline
         }
 
         // ============================================================
-        // 4. Light Probe 控制（全局混合）
-        // ============================================================
-        void DrawLightProbeSection(EnvironmentTimelineProController ctrl)
-        {
-            foldLightProbe = DrawFoldHeader(foldLightProbe, "💡 Light Probe 全局混合", CLR_HEADER_PROBE);
-            if (!foldLightProbe) return;
-
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("blendLightProbes"));
-
-            if (ctrl.blendLightProbes)
-            {
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("lightProbeUpdateInterval"));
-                EditorGUILayout.HelpBox(
-                    "全局混合：将所有节点快照的 SH 系数线性插值后直接写入 LightmapSettings.lightProbes.bakedProbes。\n" +
-                    "要求节点快照的 ProbeCount 与当前场景一致。",
-                    MessageType.Info);
-            }
-
-            serializedObject.ApplyModifiedProperties();
-        }
-
-        // ============================================================
-        // 5. ★ LightProbe 采样设置（自动优先使用 LightProbe，退化到 CustomSH）
+        // 4. ★ LightProbe 采样设置（自动优先使用 LightProbe，退化到 CustomSH）
         // ============================================================
         void DrawCustomSamplingSection(EnvironmentTimelineProController ctrl)
         {

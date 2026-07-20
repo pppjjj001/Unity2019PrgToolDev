@@ -1,4 +1,4 @@
-﻿﻿//EnvironmentTimelinePlayableBehaviour.cs
+﻿﻿﻿﻿//EnvironmentTimelinePlayableBehaviour.cs
 using UnityEngine;
 using UnityEngine.Playables;
 
@@ -38,6 +38,13 @@ namespace BYTools.EnvTimeline
 
             if (_controller == null || _controller.timelineData == null)
                 return;
+
+            // 绑定对象未激活时，不传时间给 Controller（避免无意义计算和副作用）
+            if (!_controller.gameObject.activeInHierarchy)
+            {
+                _lastTime = -1f; // 重置以便重新激活后首帧必定应用
+                return;
+            }
 
             // endTime <= 0 时使用 timelineData.totalDuration 作为默认值
             float actualEndTime = endTime > 0 ? endTime : _controller.timelineData.totalDuration;

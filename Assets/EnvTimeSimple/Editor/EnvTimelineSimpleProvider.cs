@@ -40,8 +40,16 @@ namespace UnityEditor.EnvTimelineSimple
             _coreType = FindCoreType();
             if (_coreType != null)
             {
-                _coreInstance = Activator.CreateInstance(_coreType);
-                EnvTimeSimpleDebug.Log("[EnvTimelineSimpleProvider] 核心类已加载: " + _coreType.Assembly.GetName().Name);
+                try
+                {
+                    _coreInstance = Activator.CreateInstance(_coreType);
+                    EnvTimeSimpleDebug.Log("[EnvTimelineSimpleProvider] 核心类已加载: " + _coreType.Assembly.GetName().Name);
+                }
+                catch (Exception e)
+                {
+                    EnvTimeSimpleDebug.LogError($"[EnvTimelineSimpleProvider] 创建核心实例失败: {e.InnerException?.Message ?? e.Message}");
+                    _coreInstance = null;
+                }
             }
             else
             {
@@ -61,8 +69,17 @@ namespace UnityEditor.EnvTimelineSimple
             // 遍历所有已加载程序集
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
-                type = asm.GetType(CORE_TYPE_FULL_NAME);
-                if (type != null) return type;
+                try
+                {
+                    type = asm.GetType(CORE_TYPE_FULL_NAME);
+                    if (type != null) return type;
+                }
+                catch (Exception e)
+                {
+                    // 某些程序集在 GetType 时可能抛出 ReflectionTypeLoadException，跳过即可
+                    EnvTimeSimpleDebug.LogWarning($"[EnvTimelineSimpleProvider] 跳过程序集 '{asm.GetName().Name}' (GetType 异常): {e.Message}");
+                    continue;
+                }
             }
             return null;
         }
@@ -177,7 +194,10 @@ namespace UnityEditor.EnvTimelineSimple
             if (_coreType == null) return;
             var prop = _coreType.GetProperty(propName, BindingFlags.Public | BindingFlags.Instance);
             if (prop != null && prop.CanWrite)
-                prop.SetValue(_coreInstance, value);
+            {
+                try { prop.SetValue(_coreInstance, value); }
+                catch (Exception e) { EnvTimeSimpleDebug.LogError($"[Reflector] 设置属性 {propName} 失败: {e.InnerException?.Message ?? e.Message}"); }
+            }
         }
 
         public T GetProperty<T>(string propName)
@@ -186,8 +206,15 @@ namespace UnityEditor.EnvTimelineSimple
             var prop = _coreType.GetProperty(propName, BindingFlags.Public | BindingFlags.Instance);
             if (prop != null && prop.CanRead)
             {
-                var val = prop.GetValue(_coreInstance);
-                if (val is T) return (T)val;
+                try
+                {
+                    var val = prop.GetValue(_coreInstance);
+                    if (val is T) return (T)val;
+                }
+                catch (Exception e)
+                {
+                    EnvTimeSimpleDebug.LogError($"[Reflector] 获取属性 {propName} 失败: {e.InnerException?.Message ?? e.Message}");
+                }
             }
             return default(T);
         }
@@ -208,8 +235,17 @@ namespace UnityEditor.EnvTimelineSimple
             {
                 foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
                 {
-                    type = asm.GetType(typeName);
-                    if (type != null) break;
+                    try
+                    {
+                        type = asm.GetType(typeName);
+                        if (type != null) break;
+                    }
+                    catch (Exception e)
+                    {
+                        // 某些程序集在 GetType 时可能抛出异常，跳过即可
+                        EnvTimeSimpleDebug.LogWarning($"[EnvTimelineSimpleProvider] CallStatic 跳过程序集 '{asm.GetName().Name}' (GetType 异常): {e.Message}");
+                        continue;
+                    }
                 }
             }
             if (type == null) return default(T);

@@ -1,4 +1,4 @@
-﻿//EnvironmentTimelineTrackMixer.cs
+﻿﻿//EnvironmentTimelineTrackMixer.cs
 using UnityEngine;
 using UnityEngine.Playables;
 
@@ -10,6 +10,9 @@ namespace Hotfix.Core.EnvTimelineSimple
         {
             var controller = playerData as EnvironmentTimelineController;
             if (controller == null) return;
+
+            // 绑定对象未激活时，不传时间给 Controller（避免无意义计算和副作用）
+            if (!controller.gameObject.activeInHierarchy) return;
 
             int inputCount = playable.GetInputCount();
             

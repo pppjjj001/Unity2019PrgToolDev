@@ -287,6 +287,8 @@ namespace UnityEditor.EnvTimelineSimple
             EditorGUILayout.Space(4);
             DrawCubemapSettings();
             EditorGUILayout.Space(4);
+            DrawControllerSettings();
+            EditorGUILayout.Space(4);
             DrawTimeline();
             EditorGUILayout.Space(4);
             DrawPreviewTimeline();
@@ -1480,6 +1482,40 @@ namespace UnityEditor.EnvTimelineSimple
             {
                 EditorUtility.SetDirty(data);
             }
+        }
+
+        // ============================================================
+        // Controller 设置
+        // ============================================================
+        void DrawControllerSettings()
+        {
+            var ctrl = data != null ? data.GetComponent<EnvironmentTimelineController>() : null;
+            if (ctrl == null) return;
+
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            DrawSectionHeader("Controller 设置", CLR_INFO, "⚙");
+
+            EditorGUI.BeginChangeCheck();
+
+            ctrl.restoreLightProbeUsage = (LightProbeUsage)EditorGUILayout.EnumPopup(
+                new GUIContent("关闭时恢复 LightProbe", "Controller 禁用时，将 Renderer 的 LightProbeUsage 恢复为此值\nOff = 关闭（默认）\nBlendProbes = Unity 默认混合探针"),
+                ctrl.restoreLightProbeUsage);
+
+            if (EditorGUI.EndChangeCheck())
+            {
+                EditorUtility.SetDirty(ctrl);
+            }
+
+            EditorGUILayout.Space(4);
+            if (GUILayout.Button("清除所有 MPB（恢复 Renderer）", GUILayout.Height(22)))
+            {
+                Undo.RecordObject(ctrl, "Clear All MPB");
+                ctrl.ClearAllMPB();
+                ctrl.RestoreProbeStates();
+                SceneView.RepaintAll();
+            }
+
+            EditorGUILayout.EndVertical();
         }
 
         // ============================================================
